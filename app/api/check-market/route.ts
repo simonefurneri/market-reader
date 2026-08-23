@@ -4,7 +4,7 @@ import { getXAUUSD15mCandles } from "@/lib/marketData";
 import { calculateTechnicalIndicators } from "@/lib/indicators";
 import { checkPotentialOpportunity } from "@/lib/opportunityFilter";
 import { sendTelegramMarketAlert } from "@/lib/telegram";
-import { getMarketHoursStatus } from "@/lib/marketHours";
+import { getMarketHoursStatus, isMarketOpen } from "@/lib/marketHours";
 import {
   CheckMarketApiResponse,
   ExtendedMarketAnalysisResponse,
@@ -92,7 +92,7 @@ function isAuthorized(req: NextRequest): boolean {
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   // --------------------------------------------------------------------------
-  // STEP 6: Protezione endpoint con CRON_SECRET
+  // PROTEZIONE ENDPOINT CON CRON_SECRET
   // --------------------------------------------------------------------------
   if (!isAuthorized(req)) {
     return NextResponse.json(
@@ -108,13 +108,37 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   try {
     // --------------------------------------------------------------------------
-    // STEP 1: Recupero dati live e calcolo indicatori tecnici
+    // STEP 1: CONTROLLO STATO MERCATO (ORARI FOREX/XAUUSD) - PRIMISSIMO STEP
+    // Se il mercato è chiuso, restituisce subito senza fare alcun fetch né chiamate AI
+    // --------------------------------------------------------------------------
+    const marketStatus = getMarketHoursStatus();
+
+    if (!marketStatus.isOpen || !isMarketOpen()) {
+      return NextResponse.json(
+        {
+          checked: true,
+          marketOpen: false,
+          alert: false,
+          reason: marketStatus.message,
+          marketStatus: {
+            isOpen: false,
+            isClosed: true,
+            message: marketStatus.message,
+          },
+        },
+        { status: 200 }
+      );
+    }
+
+    // --------------------------------------------------------------------------
+    // STEP 2: RECUPERO DATI LIVE E CALCOLO INDICATORI TECNICI (MERCATO APERTO)
     // --------------------------------------------------------------------------
     const candles = await getXAUUSD15mCandles();
     if (!candles || candles.length === 0) {
       return NextResponse.json(
         {
           checked: false,
+          marketOpen: true,
           alert: false,
           error: "Dati di mercato non disponibili da Twelve Data.",
         },
@@ -123,19 +147,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     const indicators = calculateTechnicalIndicators(candles);
-    const marketStatus = getMarketHoursStatus();
 
     // --------------------------------------------------------------------------
-    // STEP 2: Applicazione del filtro locale opportunityFilter
+    // STEP 3: APPLICAZIONE DEL FILTRO LOCALE OPPORTUNITYFILTER
     // --------------------------------------------------------------------------
     const filterResult = checkPotentialOpportunity(indicators, candles);
 
     // --------------------------------------------------------------------------
-    // STEP 3: Se NON c'è opportunità, restituisce { checked: true, alert: false } e si ferma
+    // STEP 4: SE NON C'È OPPORTUNITÀ, RESTITUISCE { checked: true, alert: false }
     // --------------------------------------------------------------------------
     if (!filterResult.potenzialeOpportunita) {
       const responsePayload: CheckMarketApiResponse = {
         checked: true,
+        marketOpen: true,
         alert: false,
         reason: filterResult.motivazione,
         currentPrice: indicators.currentPrice,
@@ -151,7 +175,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // --------------------------------------------------------------------------
-    // STEP 4: C'è un'opportunità -> Chiamata all'analisi Gemini con prompt esteso
+    // STEP 5: OPPORTUNITÀ RILEVATA -> CHIAMATA GEMINI AI CON PROMPT ESTESO
     // --------------------------------------------------------------------------
     const apiKey = process.env.GEMINI_API_KEY?.trim();
     if (!apiKey) {
@@ -160,6 +184,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       );
       return NextResponse.json({
         checked: true,
+        marketOpen: true,
         alert: false,
         warning:
           "Opportunità rilevata dal filtro locale, ma GEMINI_API_KEY non configurata per validazione AI.",
@@ -178,10 +203,7 @@ ${indicators.promptSummary}
 
 Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i livelli indicativi di Entry, Stop Loss (basato su S1/S2 o ATR) e Take Profit (basato su R1/R2 o risk/reward) inserendo l'obbligatorio testo di chiarimento nel campo "rischio".`;
 
-    let systemPrompt = EXTENDED_SYSTEM_PROMPT;
-    if (marketStatus.isClosed) {
-      systemPrompt += `\n\nATTENZIONE: Il mercato XAUUSD è attualmente CHIUSO (${marketStatus.message}). Segnala che i prezzi sono fermi e potrebbero esserci gap alla riapertura. Imposta "mercato_chiuso": true.`;
-    }
+    const systemPrompt = EXTENDED_SYSTEM_PROMPT;
 
     const ai = new GoogleGenAI({ apiKey });
     let aiAnalysis: ExtendedMarketAnalysisResponse | null = null;
@@ -242,6 +264,7 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
       );
       return NextResponse.json({
         checked: true,
+        marketOpen: true,
         alert: false,
         warning: "Filtro locale superato ma fallita l'elaborazione AI.",
         filterResult,
@@ -249,9 +272,8 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
     }
 
     // --------------------------------------------------------------------------
-    // STEP 5: Se Gemini conferma l'opportunità, invio notifica Telegram
+    // STEP 6: NOTIFICA TELEGRAM SE CONFERMATA DALL'AI
     // --------------------------------------------------------------------------
-    // L'opportunità è confermata se conferma_opportunita !== false e (opzionale) se non è mercato chiuso
     const isAiConfirmed =
       aiAnalysis.conferma_opportunita !== false &&
       aiAnalysis.parametri_operativi?.opportunita_valida !== false;
@@ -280,6 +302,7 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
 
     const responsePayload: CheckMarketApiResponse = {
       checked: true,
+      marketOpen: true,
       alert: isAiConfirmed,
       telegramSent,
       telegramError,

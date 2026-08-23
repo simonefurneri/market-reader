@@ -17,9 +17,11 @@ name: Market Opportunity Check Cron
 
 on:
   schedule:
-    # Esecuzione ogni 5 minuti nei giorni feriali (da Lunedì a Venerdì, 1-5 in UTC)
-    # Sintassi: [minuto: */5] [ora: *] [giorno del mese: *] [mese: *] [giorno della settimana: 1-5]
-    - cron: "*/5 * * * 1-5"
+    # Esecuzione ogni 5 minuti TUTTI i giorni della settimana (24/7)
+    # Il controllo sullo stato del mercato (aperto/chiuso) viene gestito
+    # direttamente dall'API come primissimo step a costo zero.
+    # Sintassi: [minuto: */5] [ora: *] [giorno del mese: *] [mese: *] [giorno della settimana: *]
+    - cron: "*/5 * * * *"
 
   # Permette di testare o eseguire il workflow manualmente dalla scheda "Actions" di GitHub
   workflow_dispatch:

@@ -115,6 +115,7 @@ export interface ExtendedMarketAnalysisResponse extends MarketAnalysisResponse {
 export interface CheckMarketApiResponse {
   checked: boolean;
   alert: boolean;
+  marketOpen?: boolean;
   reason?: string;
   telegramSent?: boolean;
   telegramError?: string;
@@ -127,5 +128,6 @@ export interface CheckMarketApiResponse {
   filterResult?: OpportunityFilterResult;
   aiAnalysis?: ExtendedMarketAnalysisResponse | null;
 }
+
 
 
