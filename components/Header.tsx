@@ -1,11 +1,15 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { Activity, BarChart2, Moon, LogOut } from "lucide-react";
 import { getMarketHoursStatus } from "@/lib/marketHours";
 import { logoutAction } from "@/app/login/actions";
 
 export function Header() {
+  const pathname = usePathname();
+  const isLoginPage = pathname === "/login";
+
   const [isOpen, setIsOpen] = useState<boolean>(true);
   const [mounted, setMounted] = useState<boolean>(false);
 
@@ -59,16 +63,19 @@ export function Header() {
           </div>
         )}
 
-        <form action={logoutAction}>
-          <button
-            type="submit"
-            className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5 text-xs"
-            title="Disconnetti"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Esci</span>
-          </button>
-        </form>
+        {/* Mostra il pulsante di logout solo se non ci troviamo nella pagina di login */}
+        {mounted && !isLoginPage && (
+          <form action={logoutAction}>
+            <button
+              type="submit"
+              className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5 text-xs"
+              title="Disconnetti"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Esci</span>
+            </button>
+          </form>
+        )}
       </div>
     </header>
   );
