@@ -6,11 +6,35 @@ import { checkPotentialOpportunity } from "@/lib/opportunityFilter";
 import { sendTelegramMarketAlert } from "@/lib/telegram";
 import { getMarketHoursStatus, isMarketOpen } from "@/lib/marketHours";
 import {
+  getMarketStorageState,
+  incrementConsecutiveSignalCount,
+  resetConsecutiveSignalCount,
+  recordAlertSent,
+} from "@/lib/kv";
+import {
   CheckMarketApiResponse,
   ExtendedMarketAnalysisResponse,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+// ============================================================================
+// CONFIGURAZIONE PERSISTENZA E COOLDOWN ALERT
+// ============================================================================
+
+/**
+ * Numero di controlli consecutivi con potenziale opportunità richiesti
+ * prima di procedere con l'analisi Gemini e l'eventuale notifica Telegram.
+ * Default: 3 (il segnale deve persistere per 3 controlli di fila).
+ */
+const REQUIRED_CONSECUTIVE_SIGNALS = 3;
+
+/**
+ * Intervallo minimo di cooldown in minuti tra un alert inviato e il successivo.
+ * Default: 60 minuti.
+ */
+const ALERT_COOLDOWN_MINUTES = 60;
+
 
 // Modelli Gemini con fallback in ordine di priorità
 const FALLBACK_MODELS = [
@@ -25,7 +49,7 @@ const FALLBACK_MODELS = [
 const MAX_RETRIES_PER_MODEL = 2;
 
 const EXTENDED_SYSTEM_PROMPT = `Sei un assistente esperto di analisi tecnica che aiuta a LEGGERE e interpretare il mercato XAUUSD (Oro) su timeframe 15m.
-Il sistema di screening algoritmico ha identificato una POTENZIALE OPPORTUNITÀ tecnica (rottura di livelli, momentum RSI o espansione di volatilità).
+Il sistema di screening algoritmico ha identificato un SEGNALE CONFERMATO persistente (almeno 2 condizioni tecniche contemporanee confermate per più controlli consecutivi).
 
 Il tuo compito è analizzare la situazione tecnica e rispondere ESCLUSIVAMENTE in formato JSON con la seguente struttura:
 {
@@ -64,9 +88,7 @@ async function sleep(ms: number) {
 function isAuthorized(req: NextRequest): boolean {
   const cronSecret = process.env.CRON_SECRET?.trim();
 
-  // Se CRON_SECRET è impostato, verifica l'header Authorization o x-cron-secret
   if (!cronSecret) {
-    // In ambiente senza segreto configurato (es. test locale iniziale), logghiamo un warning
     console.warn(
       "[CHECK-MARKET] CRON_SECRET non configurato nelle variabili d'ambiente."
     );
@@ -131,7 +153,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // --------------------------------------------------------------------------
-    // STEP 2: RECUPERO DATI LIVE E CALCOLO INDICATORI TECNICI (MERCATO APERTO)
+    // STEP 2: RECUPERO DATI LIVE E CALCOLO INDICATORI TECNICI
     // --------------------------------------------------------------------------
     const candles = await getXAUUSD15mCandles();
     if (!candles || candles.length === 0) {
@@ -149,18 +171,25 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const indicators = calculateTechnicalIndicators(candles);
 
     // --------------------------------------------------------------------------
-    // STEP 3: APPLICAZIONE DEL FILTRO LOCALE OPPORTUNITYFILTER
+    // STEP 3: APPLICAZIONE DEL FILTRO LOCALE RAFFORZATO (>= 2 condizioni su 3)
     // --------------------------------------------------------------------------
     const filterResult = checkPotentialOpportunity(indicators, candles);
 
     // --------------------------------------------------------------------------
-    // STEP 4: SE NON C'È OPPORTUNITÀ, RESTITUISCE { checked: true, alert: false }
+    // STEP 4: GESTIONE PERSISTENZA SEGNALI CON VERCEL KV / UPSTASH REDIS
     // --------------------------------------------------------------------------
+
+    // CASO A: Il filtro NON rileva alcun segnale -> Reset contatore segnali continui
     if (!filterResult.potenzialeOpportunita) {
+      await resetConsecutiveSignalCount();
+
       const responsePayload: CheckMarketApiResponse = {
         checked: true,
         marketOpen: true,
         alert: false,
+        signalObserving: false,
+        consecutiveSignalCount: 0,
+        requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
         reason: filterResult.motivazione,
         currentPrice: indicators.currentPrice,
         marketStatus: {
@@ -174,8 +203,65 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json(responsePayload, { status: 200 });
     }
 
+    // CASO B: Il filtro rileva una potenziale opportunità -> Incremento contatore
+    const consecutiveSignalCount = await incrementConsecutiveSignalCount();
+    const storageState = await getMarketStorageState();
+
+    // SOTTO-CASO B1: Segnale in osservazione (sotto la soglia di N controlli consecutivi)
+    if (consecutiveSignalCount < REQUIRED_CONSECUTIVE_SIGNALS) {
+      const responsePayload: CheckMarketApiResponse = {
+        checked: true,
+        marketOpen: true,
+        alert: false,
+        signalObserving: true,
+        consecutiveSignalCount,
+        requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
+        reason: `Segnale in osservazione: rilevazione ${consecutiveSignalCount}/${REQUIRED_CONSECUTIVE_SIGNALS} consecutive. In attesa di persistenza prima dell'analisi AI.`,
+        currentPrice: indicators.currentPrice,
+        marketStatus: {
+          isOpen: marketStatus.isOpen,
+          isClosed: marketStatus.isClosed,
+          message: marketStatus.message,
+        },
+        filterResult,
+      };
+
+      return NextResponse.json(responsePayload, { status: 200 });
+    }
+
+    // SOTTO-CASO B2: Segnale persistente raggiunto (>= REQUIRED_CONSECUTIVE_SIGNALS)
+    // Verifica del cooldown dall'ultimo alert inviato (default 60 min)
+    const now = Date.now();
+    const lastAlertTimestamp = storageState.lastAlertTimestamp || 0;
+    const msSinceLastAlert = now - lastAlertTimestamp;
+    const minutesSinceLastAlert =
+      lastAlertTimestamp > 0 ? Math.floor(msSinceLastAlert / (1000 * 60)) : 9999;
+
+    if (lastAlertTimestamp > 0 && minutesSinceLastAlert < ALERT_COOLDOWN_MINUTES) {
+      const responsePayload: CheckMarketApiResponse = {
+        checked: true,
+        marketOpen: true,
+        alert: false,
+        cooldownActive: true,
+        minutesSinceLastAlert,
+        cooldownMinutes: ALERT_COOLDOWN_MINUTES,
+        consecutiveSignalCount,
+        requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
+        reason: `Segnale valido persistente (${consecutiveSignalCount} consecutivi), ma alert in cooldown (${minutesSinceLastAlert}/${ALERT_COOLDOWN_MINUTES} min trascorsi dall'ultima notifica).`,
+        currentPrice: indicators.currentPrice,
+        marketStatus: {
+          isOpen: marketStatus.isOpen,
+          isClosed: marketStatus.isClosed,
+          message: marketStatus.message,
+        },
+        filterResult,
+      };
+
+      return NextResponse.json(responsePayload, { status: 200 });
+    }
+
     // --------------------------------------------------------------------------
-    // STEP 5: OPPORTUNITÀ RILEVATA -> CHIAMATA GEMINI AI CON PROMPT ESTESO
+    // STEP 5: SEGNALE PERSISTENTE E COOLDOWN SUPERATO -> CHIAMATA GEMINI AI
     // --------------------------------------------------------------------------
     const apiKey = process.env.GEMINI_API_KEY?.trim();
     if (!apiKey) {
@@ -187,7 +273,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         marketOpen: true,
         alert: false,
         warning:
-          "Opportunità rilevata dal filtro locale, ma GEMINI_API_KEY non configurata per validazione AI.",
+          "Segnale persistente confermato dal filtro locale, ma GEMINI_API_KEY non configurata.",
         filterResult,
       });
     }
@@ -195,7 +281,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // Preparazione prompt arricchito con dettagli del filtro
     const reasonsText = filterResult.motivi.join("\n- ");
     const userPrompt = `Stato Mercato: ${marketStatus.message} (Chiuso: ${marketStatus.isClosed ? "Sì" : "No"})
-Filtro Locale Segnali Rilevati:
+Filtro Locale Segnali Rilevati (${consecutiveSignalCount} controlli consecutivi):
 - ${reasonsText}
 
 Dati Tecnici Attuali su XAUUSD (15m):
@@ -272,7 +358,7 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
     }
 
     // --------------------------------------------------------------------------
-    // STEP 6: NOTIFICA TELEGRAM SE CONFERMATA DALL'AI
+    // STEP 6: NOTIFICA TELEGRAM SE CONFERMATA DALL'AI E AGGIORNAMENTO STORAGE
     // --------------------------------------------------------------------------
     const isAiConfirmed =
       aiAnalysis.conferma_opportunita !== false &&
@@ -298,6 +384,9 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
 
       telegramSent = telegramResult.success;
       telegramError = telegramResult.error;
+
+      // Aggiornamento storage: salva lastAlertTimestamp e resetta consecutiveSignalCount
+      await recordAlertSent(now);
     }
 
     const responsePayload: CheckMarketApiResponse = {
@@ -306,6 +395,10 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
       alert: isAiConfirmed,
       telegramSent,
       telegramError,
+      consecutiveSignalCount: isAiConfirmed ? 0 : consecutiveSignalCount,
+      requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
+      minutesSinceLastAlert: isAiConfirmed ? 0 : minutesSinceLastAlert,
+      cooldownMinutes: ALERT_COOLDOWN_MINUTES,
       currentPrice: indicators.currentPrice,
       marketStatus: {
         isOpen: marketStatus.isOpen,

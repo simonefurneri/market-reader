@@ -89,6 +89,8 @@ export interface OpportunityFilterDetails {
   atrMediaStorica: number | null;
   atrIncrementoPercentuale: number | null;
   trendEma: "bullish" | "bearish" | "neutral";
+  condizioniSoddisfatte?: number;
+  condizioniMinimeRichieste?: number;
 }
 
 export interface OpportunityFilterResult {
@@ -116,6 +118,12 @@ export interface CheckMarketApiResponse {
   checked: boolean;
   alert: boolean;
   marketOpen?: boolean;
+  signalObserving?: boolean;
+  consecutiveSignalCount?: number;
+  requiredConsecutiveSignals?: number;
+  minutesSinceLastAlert?: number;
+  cooldownMinutes?: number;
+  cooldownActive?: boolean;
   reason?: string;
   telegramSent?: boolean;
   telegramError?: string;
@@ -128,6 +136,7 @@ export interface CheckMarketApiResponse {
   filterResult?: OpportunityFilterResult;
   aiAnalysis?: ExtendedMarketAnalysisResponse | null;
 }
+
 
 
 

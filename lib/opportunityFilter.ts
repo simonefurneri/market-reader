@@ -5,6 +5,13 @@ import { CandleData, TechnicalIndicatorsSummary } from "@/lib/types";
 // ============================================================================
 
 /**
+ * Numero minimo di condizioni tecniche (tra Breakout, RSI fuori fascia, Espansione ATR)
+ * che devono verificarsi CONTEMPORANEAMENTE per confermare una potenziale opportunità.
+ * Default: 2 su 3 (evita falsi segnali isolati).
+ */
+export const MIN_REQUIRED_CONDITIONS = 2;
+
+/**
  * Soglia inferiore dell'RSI.
  * Un valore inferiore a questa soglia indica uscita dalla fascia neutrale
  * verso una zona di ipervenduto / forte pressione ribassista.
@@ -79,6 +86,8 @@ export interface OpportunityFilterDetails {
   atrMediaStorica: number | null;
   atrIncrementoPercentuale: number | null;
   trendEma: "bullish" | "bearish" | "neutral";
+  condizioniSoddisfatte: number;
+  condizioniMinimeRichieste: number;
 }
 
 export interface OpportunityFilterResult {
@@ -133,10 +142,11 @@ function calculateHistoricalAverageTrueRange(
  * Valuta in modo deterministico e rule-based (senza chiamare AI) se la situazione
  * attuale del mercato presenta una potenziale opportunità operativa.
  *
- * Regole analizzate:
+ * RAFFORZAMENTO CONCORRENTE:
+ * Richiede che almeno 2 delle seguenti 3 condizioni siano vere contemporaneamente:
  * 1. Rottura di Supporto o Resistenza con chiusura oltre il livello
  * 2. RSI che esce dalla fascia neutrale 40-60 (ipercomprato/ipervenduto o forte momentum)
- * 3. ATR che aumenta significativamente rispetto alla media delle ultime 20 candele (espansione post-compressione)
+ * 3. ATR che aumenta significativamente rispetto alla media delle ultime 20 candele (espansione di volatilità)
  *
  * @param indicators Indicatori tecnici calcolati o oggetto di input
  * @param candles (Opzionale) Ultime candele storiche ordinate cronologicamente
@@ -165,7 +175,7 @@ export function checkPotentialOpportunity(
   let tipoBreakout: "resistenza" | "supporto" | null = null;
 
   // --------------------------------------------------------------------------
-  // 1. RECOGNITION: ROTTURA SUPPORTO / RESISTENZA
+  // 1. CONDIZIONE 1: ROTTURA SUPPORTO / RESISTENZA (BREAKOUT)
   // --------------------------------------------------------------------------
   if (candleList.length >= 2) {
     const lastCandle = candleList[candleList.length - 1];
@@ -182,7 +192,7 @@ export function checkPotentialOpportunity(
         livelloRotto = res;
         tipoBreakout = "resistenza";
         motivi.push(
-          `Rottura rialzista della resistenza a $${res.toFixed(2)} con chiusura candela a $${lastCandle.close.toFixed(2)}`
+          `Rottura rialzista della resistenza a $${res.toFixed(2)} con chiusura a $${lastCandle.close.toFixed(2)}`
         );
         break;
       }
@@ -199,7 +209,7 @@ export function checkPotentialOpportunity(
         livelloRotto = sup;
         tipoBreakout = "supporto";
         motivi.push(
-          `Rottura ribassista del supporto a $${sup.toFixed(2)} con chiusura candela a $${lastCandle.close.toFixed(2)}`
+          `Rottura ribassista del supporto a $${sup.toFixed(2)} con chiusura a $${lastCandle.close.toFixed(2)}`
         );
         break;
       }
@@ -226,8 +236,10 @@ export function checkPotentialOpportunity(
     }
   }
 
+  const condizioneBreakout = breakoutResistenza || breakoutSupporto;
+
   // --------------------------------------------------------------------------
-  // 2. RECOGNITION: RSI CHE ESCE DALLA FASCIA 40-60
+  // 2. CONDIZIONE 2: RSI CHE ESCE DALLA FASCIA 40-60
   // --------------------------------------------------------------------------
   let rsiUscitaFascia = false;
   let rsiStato: "ipercomprato" | "ipervenduto" | "neutrale" = "neutrale";
@@ -237,31 +249,33 @@ export function checkPotentialOpportunity(
       rsiUscitaFascia = true;
       rsiStato = "ipercomprato";
       motivi.push(
-        `RSI a ${rsi14.toFixed(1)} in zona di forte ipercomprato (>= ${RSI_EXTREME_OVERBOUGHT})`
+        `RSI a ${rsi14.toFixed(1)} in forte ipercomprato (>= ${RSI_EXTREME_OVERBOUGHT})`
       );
     } else if (rsi14 > RSI_UPPER_THRESHOLD) {
       rsiUscitaFascia = true;
       rsiStato = "ipercomprato";
       motivi.push(
-        `RSI a ${rsi14.toFixed(1)} uscito al rialzo dalla fascia neutrale (> ${RSI_UPPER_THRESHOLD}) con momentum positivo`
+        `RSI a ${rsi14.toFixed(1)} uscito al rialzo dalla fascia neutrale (> ${RSI_UPPER_THRESHOLD})`
       );
     } else if (rsi14 <= RSI_EXTREME_OVERSOLD) {
       rsiUscitaFascia = true;
       rsiStato = "ipervenduto";
       motivi.push(
-        `RSI a ${rsi14.toFixed(1)} in zona di forte ipervenduto (<= ${RSI_EXTREME_OVERSOLD})`
+        `RSI a ${rsi14.toFixed(1)} in forte ipervenduto (<= ${RSI_EXTREME_OVERSOLD})`
       );
     } else if (rsi14 < RSI_LOWER_THRESHOLD) {
       rsiUscitaFascia = true;
       rsiStato = "ipervenduto";
       motivi.push(
-        `RSI a ${rsi14.toFixed(1)} uscito al ribasso dalla fascia neutrale (< ${RSI_LOWER_THRESHOLD}) con pressione venditrice`
+        `RSI a ${rsi14.toFixed(1)} uscito al ribasso dalla fascia neutrale (< ${RSI_LOWER_THRESHOLD})`
       );
     }
   }
 
+  const condizioneRsi = rsiUscitaFascia;
+
   // --------------------------------------------------------------------------
-  // 3. RECOGNITION: ATR & ESPANSIONE DI VOLATILITÀ
+  // 3. CONDIZIONE 3: ATR & ESPANSIONE DI VOLATILITÀ RISPETTO ALLE ULTIME 20 CANDELE
   // --------------------------------------------------------------------------
   let atrEspansione = false;
   let atrMediaStorica: number | null = null;
@@ -283,10 +297,12 @@ export function checkPotentialOpportunity(
     if (ratio >= ATR_EXPANSION_MULTIPLIER) {
       atrEspansione = true;
       motivi.push(
-        `Espansione di volatilità: ATR ($${effectiveAtr.toFixed(2)}) superiore del ${atrIncrementoPercentuale}% rispetto alla media a ${ATR_LOOKBACK_PERIOD} candele ($${atrMediaStorica.toFixed(2)})`
+        `Espansione di volatilità: ATR ($${effectiveAtr.toFixed(2)}) +${atrIncrementoPercentuale}% vs media a ${ATR_LOOKBACK_PERIOD} periodi ($${atrMediaStorica.toFixed(2)})`
       );
     }
   }
+
+  const condizioneAtr = atrEspansione;
 
   // --------------------------------------------------------------------------
   // 4. VALUTAZIONE TREND EMA
@@ -301,25 +317,25 @@ export function checkPotentialOpportunity(
   }
 
   // --------------------------------------------------------------------------
-  // 5. DETERMINAZIONE POTENZIALE OPPORTUNITÀ & COSTRUZIONE MOTIVAZIONE
+  // 5. DETERMINAZIONE OPPORTUNITÀ: ALMENO 2 CONDIZIONI SU 3 CONTEMPORANEE
   // --------------------------------------------------------------------------
-  // Una situazione è considerata "potenziale opportunità" se si verifica:
-  // - Una rottura di supporto/resistenza
-  // - O una combinazione di RSI fuori fascia + espansione volatilità ATR
-  // - O singolarmente un evento forte (RSI estremo o Breakout confermato)
-  const potenzialeOpportunita =
-    breakoutResistenza ||
-    breakoutSupporto ||
-    (rsiUscitaFascia && atrEspansione) ||
-    (rsi14 !== null && (rsi14 <= RSI_EXTREME_OVERSOLD || rsi14 >= RSI_EXTREME_OVERBOUGHT));
+  const condizioniSoddisfatte = [
+    condizioneBreakout,
+    condizioneRsi,
+    condizioneAtr,
+  ].filter(Boolean).length;
+
+  const potenzialeOpportunita = condizioniSoddisfatte >= MIN_REQUIRED_CONDITIONS;
 
   let motivazione: string;
 
   if (potenzialeOpportunita) {
-    motivazione = `Potenziale opportunità rilevata: ${motivi.join("; ")}.`;
+    motivazione = `Potenziale opportunità confermata (${condizioniSoddisfatte}/3 condizioni contemporanee): ${motivi.join("; ")}.`;
+  } else if (condizioniSoddisfatte === 1) {
+    motivazione = `Segnale isolato non confermato (1/3 condizioni: ${motivi.join("; ")}). Richieste almeno ${MIN_REQUIRED_CONDITIONS} condizioni simultanee (Breakout, RSI, Espansione ATR).`;
   } else {
     motivazione =
-      "Nessuna opportunità imminente rilevata. Il mercato si trova in fase di consolidamento all'interno dei livelli chiave, con RSI compreso nella fascia neutrale (40-60) e volatilità nella media.";
+      "Nessuna opportunità rilevata (0/3 condizioni). Il mercato è in consolidamento nei livelli chiave con RSI e volatilità nella norma.";
   }
 
   return {
@@ -339,6 +355,8 @@ export function checkPotentialOpportunity(
       atrMediaStorica,
       atrIncrementoPercentuale,
       trendEma,
+      condizioniSoddisfatte,
+      condizioniMinimeRichieste: MIN_REQUIRED_CONDITIONS,
     },
   };
 }
