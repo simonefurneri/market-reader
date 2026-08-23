@@ -75,3 +75,57 @@ export interface AnalysisSummary {
   };
   notes?: string[];
 }
+
+export interface OpportunityFilterDetails {
+  breakoutResistenza: boolean;
+  breakoutSupporto: boolean;
+  livelloRotto?: number | null;
+  tipoBreakout?: "resistenza" | "supporto" | null;
+  rsiUscitaFascia: boolean;
+  rsiValore: number | null;
+  rsiStato: "ipercomprato" | "ipervenduto" | "neutrale";
+  atrEspansione: boolean;
+  atrAttuale: number | null;
+  atrMediaStorica: number | null;
+  atrIncrementoPercentuale: number | null;
+  trendEma: "bullish" | "bearish" | "neutral";
+}
+
+export interface OpportunityFilterResult {
+  potenzialeOpportunita: boolean;
+  motivazione: string;
+  motivi: string[];
+  dettagli: OpportunityFilterDetails;
+}
+
+export interface OperationalParameters {
+  opportunita_valida?: boolean;
+  tipo_operazione?: "long" | "short" | "nessuna";
+  entry_price?: string | number | null;
+  stop_loss?: string | number | null;
+  take_profit?: string | number | null;
+  rischio?: string;
+}
+
+export interface ExtendedMarketAnalysisResponse extends MarketAnalysisResponse {
+  conferma_opportunita?: boolean;
+  parametri_operativi?: OperationalParameters;
+}
+
+export interface CheckMarketApiResponse {
+  checked: boolean;
+  alert: boolean;
+  reason?: string;
+  telegramSent?: boolean;
+  telegramError?: string;
+  currentPrice?: number;
+  marketStatus?: {
+    isOpen: boolean;
+    isClosed: boolean;
+    message: string;
+  };
+  filterResult?: OpportunityFilterResult;
+  aiAnalysis?: ExtendedMarketAnalysisResponse | null;
+}
+
+

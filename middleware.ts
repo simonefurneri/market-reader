@@ -4,10 +4,11 @@ import { AUTH_COOKIE_NAME, verifyAuthToken } from "@/lib/auth";
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Percorsi pubblici esclusi dal controllo di autenticazione
+  // Percorsi pubblici o protetti da secret dedicato esclusi dal controllo del cookie di sessione
   if (
     pathname.startsWith("/login") ||
     pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/api/check-market") ||
     pathname.startsWith("/_next") ||
     pathname.includes(".") || // Risorse statiche (.png, .svg, .ico, etc.)
     pathname === "/favicon.ico"
