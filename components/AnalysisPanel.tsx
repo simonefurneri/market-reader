@@ -39,6 +39,7 @@ export function AnalysisPanel({
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [modelUsed, setModelUsed] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState<number>(autoRefreshIntervalSeconds);
 
   const runAnalysis = useCallback(async (isPolling = false) => {
     try {
@@ -79,6 +80,7 @@ export function AnalysisPanel({
         setModelUsed(result.modelUsed);
       }
       setLastUpdated(new Date());
+      setCountdown(autoRefreshIntervalSeconds);
     } catch (err) {
       const message =
         err instanceof Error
@@ -89,18 +91,29 @@ export function AnalysisPanel({
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [autoRefreshIntervalSeconds]);
+
+  const handleManualRefresh = useCallback(() => {
+    setCountdown(autoRefreshIntervalSeconds);
+    runAnalysis(false);
+  }, [autoRefreshIntervalSeconds, runAnalysis]);
 
   // Fetch iniziale
   useEffect(() => {
     runAnalysis(false);
   }, [runAnalysis]);
 
-  // Polling ogni 90-120 secondi
+  // Timer per countdown decrescente secondo per secondo e auto-refresh a zero
   useEffect(() => {
     const timer = setInterval(() => {
-      runAnalysis(true);
-    }, autoRefreshIntervalSeconds * 1000);
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          runAnalysis(true);
+          return autoRefreshIntervalSeconds;
+        }
+        return prev - 1;
+      });
+    }, 1000);
 
     return () => clearInterval(timer);
   }, [runAnalysis, autoRefreshIntervalSeconds]);
@@ -183,9 +196,9 @@ export function AnalysisPanel({
 
           <button
             type="button"
-            onClick={() => runAnalysis(false)}
+            onClick={handleManualRefresh}
             disabled={loading || refreshing}
-            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors disabled:opacity-50 text-xs font-mono"
             title="Ricalcola analisi ora"
           >
             <RefreshCw
@@ -193,6 +206,9 @@ export function AnalysisPanel({
                 refreshing ? "animate-spin text-purple-400" : ""
               }`}
             />
+            <span className="text-[11px] text-slate-300 font-medium">
+              {refreshing ? "Analisi..." : `Aggiorna (${countdown}s)`}
+            </span>
           </button>
         </div>
 
@@ -399,14 +415,17 @@ export function AnalysisPanel({
               </div>
             )}
 
-            {/* Ultimo aggiornamento */}
+            {/* Ultimo aggiornamento con Countdown dinamico */}
             {lastUpdated && (
-              <div className="flex items-center justify-between text-[10px] text-slate-500 px-1">
+              <div className="flex items-center justify-between text-[10px] text-slate-500 px-1 font-mono">
                 <span className="flex items-center gap-1">
                   <Clock className="w-3 h-3" />
                   {lastUpdated.toLocaleTimeString("it-IT", { hour12: false })}
                 </span>
-                <span>Auto-refresh: {autoRefreshIntervalSeconds}s</span>
+                <span className="text-slate-400">
+                  Auto-refresh in:{" "}
+                  <span className="text-purple-400 font-semibold">{countdown}s</span>
+                </span>
               </div>
             )}
           </div>

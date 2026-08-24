@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useTransition } from "react";
+import React, { useState, useEffect, useTransition, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -24,18 +24,39 @@ interface StatusDashboardProps {
   initialLog: MarketCheckLog | null;
 }
 
+const STATUS_REFRESH_INTERVAL_SECONDS = 30;
+
 export function StatusDashboard({ initialLog }: StatusDashboardProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [countdown, setCountdown] = useState<number>(STATUS_REFRESH_INTERVAL_SECONDS);
+  const [currentTime, setCurrentTime] = useState<number>(() => Date.now());
 
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(() => {
     setIsRefreshing(true);
+    setCountdown(STATUS_REFRESH_INTERVAL_SECONDS);
     startTransition(() => {
       router.refresh();
       setTimeout(() => setIsRefreshing(false), 500);
     });
-  };
+  }, [router]);
+
+  // Countdown timer e auto-refresh ogni 30 secondi
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          handleRefresh();
+          return STATUS_REFRESH_INTERVAL_SECONDS;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [handleRefresh]);
 
   const formatDateTime = (timestamp: number) => {
     if (!timestamp || timestamp === 0) return "Nessun dato registrato";
@@ -49,7 +70,7 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
 
   const getTimeAgo = (timestamp: number) => {
     if (!timestamp || timestamp === 0) return "";
-    const diffSec = Math.floor((Date.now() - timestamp) / 1000);
+    const diffSec = Math.max(0, Math.floor((currentTime - timestamp) / 1000));
     if (diffSec < 60) return `${diffSec} sec fa`;
     const diffMin = Math.floor(diffSec / 60);
     if (diffMin < 60) return `${diffMin} min fa`;
@@ -83,14 +104,16 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
         <button
           onClick={handleRefresh}
           disabled={isRefreshing || isPending}
-          className="self-start sm:self-auto inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition-all active:scale-95"
+          className="self-start sm:self-auto inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition-all active:scale-95 font-mono"
         >
           <RefreshCw
             className={`w-3.5 h-3.5 ${
               isRefreshing || isPending ? "animate-spin" : ""
             }`}
           />
-          {isRefreshing || isPending ? "Aggiornamento..." : "Aggiorna Stato"}
+          {isRefreshing || isPending
+            ? "Aggiornamento..."
+            : `Aggiorna (${countdown}s)`}
         </button>
       </div>
 
@@ -122,7 +145,7 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
                 <Clock className="w-4 h-4 text-blue-400" />
               </div>
               <div>
-                <div className="text-base font-bold text-white">
+                <div className="text-base font-bold text-white font-mono">
                   {getTimeAgo(initialLog.timestamp)}
                 </div>
                 <div className="text-[11px] text-slate-400 mt-0.5">
@@ -173,7 +196,7 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
                 <TrendingUp className="w-4 h-4 text-purple-400" />
               </div>
               <div>
-                <div className="text-base font-bold text-white flex items-center gap-2">
+                <div className="text-base font-bold text-white flex items-center gap-2 font-mono">
                   <span>{initialLog.consecutiveSignalCount} / 3</span>
                   <span className="text-xs font-normal text-slate-400">
                     controlli

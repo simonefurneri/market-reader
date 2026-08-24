@@ -41,6 +41,7 @@ export function CandleChart({
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [currentCandle, setCurrentCandle] = useState<CandleData | null>(null);
+  const [countdown, setCountdown] = useState<number>(autoRefreshIntervalSeconds);
   const [priceChange, setPriceChange] = useState<{
     diff: number;
     pct: number;
@@ -81,6 +82,7 @@ export function CandleChart({
       }
 
       setLastUpdated(new Date());
+      setCountdown(autoRefreshIntervalSeconds);
     } catch (err) {
       const message =
         err instanceof Error
@@ -91,7 +93,12 @@ export function CandleChart({
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [autoRefreshIntervalSeconds]);
+
+  const handleManualRefresh = useCallback(() => {
+    setCountdown(autoRefreshIntervalSeconds);
+    loadData(true);
+  }, [autoRefreshIntervalSeconds, loadData]);
 
   // Inizializzazione grafico Lightweight Charts con tema scuro e responsive
   useEffect(() => {
@@ -177,12 +184,17 @@ export function CandleChart({
     };
   }, [loadData]);
 
-  // Polling automatico ogni 60 secondi
+  // Timer per countdown decrescente secondo per secondo e auto-refresh a zero
   useEffect(() => {
-    const intervalMs = autoRefreshIntervalSeconds * 1000;
     const timer = setInterval(() => {
-      loadData(true);
-    }, intervalMs);
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          loadData(true);
+          return autoRefreshIntervalSeconds;
+        }
+        return prev - 1;
+      });
+    }, 1000);
 
     return () => clearInterval(timer);
   }, [loadData, autoRefreshIntervalSeconds]);
@@ -233,7 +245,7 @@ export function CandleChart({
           )}
         </div>
 
-        {/* Polling indicator & Refresh button */}
+        {/* Polling indicator & Refresh button con Countdown dinamico */}
         <div className="flex items-center gap-3 text-xs text-slate-400">
           {lastUpdated && (
             <div className="flex items-center gap-1.5 font-mono text-[11px] text-slate-400">
@@ -246,16 +258,16 @@ export function CandleChart({
 
           <button
             type="button"
-            onClick={() => loadData(true)}
+            onClick={handleManualRefresh}
             disabled={loading || refreshing}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors disabled:opacity-50"
-            title="Aggiorna ora"
+            title="Aggiorna candele ora"
           >
             <RefreshCw
               className={`w-3.5 h-3.5 ${refreshing ? "animate-spin text-blue-400" : ""}`}
             />
-            <span className="hidden sm:inline">
-              {refreshing ? "Aggiornamento..." : "Aggiorna (60s)"}
+            <span className="hidden sm:inline font-mono">
+              {refreshing ? "Aggiornamento..." : `Aggiorna (${countdown}s)`}
             </span>
           </button>
         </div>
