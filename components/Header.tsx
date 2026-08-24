@@ -41,9 +41,34 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-2 sm:gap-4">
+        {mounted && !isLoginPage && (
+          <nav className="flex items-center gap-1 bg-slate-800/60 p-1 rounded-lg border border-slate-700/60 text-xs">
+            <a
+              href="/"
+              className={`px-2.5 py-1 rounded-md transition-colors ${
+                pathname === "/"
+                  ? "bg-blue-600 text-white font-medium"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              Grafico
+            </a>
+            <a
+              href="/status"
+              className={`px-2.5 py-1 rounded-md transition-colors ${
+                pathname === "/status"
+                  ? "bg-blue-600 text-white font-medium"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              Stato
+            </a>
+          </nav>
+        )}
+
         {mounted && (
           <div
-            className={`hidden sm:flex items-center gap-2 text-xs px-3 py-1.5 rounded-md border ${
+            className={`hidden md:flex items-center gap-2 text-xs px-3 py-1.5 rounded-md border ${
               isOpen
                 ? "text-emerald-300 bg-emerald-950/30 border-emerald-500/30"
                 : "text-amber-300 bg-amber-950/30 border-amber-500/30"

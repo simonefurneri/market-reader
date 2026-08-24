@@ -11,6 +11,7 @@ import {
   incrementConsecutiveSignalCount,
   resetConsecutiveSignalCount,
   recordAlertSent,
+  saveLastCheckLog,
 } from "@/lib/kv";
 import {
   CheckMarketApiResponse,
@@ -129,7 +130,6 @@ async function authenticateRequest(
       }
     }
   } else if (!qstashSignature) {
-    // Se né QStash né CRON_SECRET sono configurati (es. primo test locale), logghiamo warning
     console.warn(
       "[CHECK-MARKET] Nessun metodo di sicurezza (QSTASH o CRON_SECRET) configurato."
     );
@@ -143,7 +143,6 @@ async function authenticateRequest(
  * Gestore unificato per le richieste di controllo mercato (supporta GET e POST).
  */
 async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
-  // Lettura del corpo richiesta (se presente in richieste POST)
   let rawBody = "";
   try {
     if (req.method === "POST") {
@@ -178,6 +177,16 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
     const marketStatus = getMarketHoursStatus();
 
     if (!marketStatus.isOpen || !isMarketOpen()) {
+      await saveLastCheckLog({
+        timestamp: Date.now(),
+        marketOpen: false,
+        signalDetected: false,
+        consecutiveSignalCount: 0,
+        alertSent: false,
+        message: `Mercato chiuso (${marketStatus.message})`,
+        authType,
+      });
+
       return NextResponse.json(
         {
           checked: true,
@@ -200,6 +209,16 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
     // --------------------------------------------------------------------------
     const candles = await getXAUUSD15mCandles();
     if (!candles || candles.length === 0) {
+      await saveLastCheckLog({
+        timestamp: Date.now(),
+        marketOpen: true,
+        signalDetected: false,
+        consecutiveSignalCount: 0,
+        alertSent: false,
+        message: "Errore recupero candele Twelve Data",
+        authType,
+      });
+
       return NextResponse.json(
         {
           checked: false,
@@ -225,6 +244,19 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
     // CASO A: Il filtro NON rileva alcun segnale -> Reset contatore segnali continui
     if (!filterResult.potenzialeOpportunita) {
       await resetConsecutiveSignalCount();
+
+      await saveLastCheckLog({
+        timestamp: Date.now(),
+        marketOpen: true,
+        signalDetected: false,
+        consecutiveSignalCount: 0,
+        alertSent: false,
+        message: "Nessun segnale (mercato in consolidamento)",
+        currentPrice: indicators.currentPrice,
+        authType,
+        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+        motivi: filterResult.motivi,
+      });
 
       const responsePayload: CheckMarketApiResponse = {
         checked: true,
@@ -252,6 +284,19 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
 
     // SOTTO-CASO B1: Segnale in osservazione (sotto la soglia di N controlli consecutivi)
     if (consecutiveSignalCount < REQUIRED_CONSECUTIVE_SIGNALS) {
+      await saveLastCheckLog({
+        timestamp: Date.now(),
+        marketOpen: true,
+        signalDetected: true,
+        consecutiveSignalCount,
+        alertSent: false,
+        message: `Segnale in osservazione (${consecutiveSignalCount}/${REQUIRED_CONSECUTIVE_SIGNALS})`,
+        currentPrice: indicators.currentPrice,
+        authType,
+        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+        motivi: filterResult.motivi,
+      });
+
       const responsePayload: CheckMarketApiResponse = {
         checked: true,
         marketOpen: true,
@@ -281,6 +326,19 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
       lastAlertTimestamp > 0 ? Math.floor(msSinceLastAlert / (1000 * 60)) : 9999;
 
     if (lastAlertTimestamp > 0 && minutesSinceLastAlert < ALERT_COOLDOWN_MINUTES) {
+      await saveLastCheckLog({
+        timestamp: Date.now(),
+        marketOpen: true,
+        signalDetected: true,
+        consecutiveSignalCount,
+        alertSent: false,
+        message: `Segnale valido ma alert in cooldown (${minutesSinceLastAlert}/${ALERT_COOLDOWN_MINUTES} min)`,
+        currentPrice: indicators.currentPrice,
+        authType,
+        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+        motivi: filterResult.motivi,
+      });
+
       const responsePayload: CheckMarketApiResponse = {
         checked: true,
         marketOpen: true,
@@ -308,9 +366,19 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
     // --------------------------------------------------------------------------
     const apiKey = process.env.GEMINI_API_KEY?.trim();
     if (!apiKey) {
-      console.warn(
-        "[CHECK-MARKET] GEMINI_API_KEY non configurata. Impossibile completare l'analisi AI."
-      );
+      await saveLastCheckLog({
+        timestamp: Date.now(),
+        marketOpen: true,
+        signalDetected: true,
+        consecutiveSignalCount,
+        alertSent: false,
+        message: "Segnale persistente ma GEMINI_API_KEY non configurata",
+        currentPrice: indicators.currentPrice,
+        authType,
+        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+        motivi: filterResult.motivi,
+      });
+
       return NextResponse.json({
         checked: true,
         marketOpen: true,
@@ -387,10 +455,19 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
     }
 
     if (!aiAnalysis) {
-      console.error(
-        "[CHECK-MARKET] Errore analisi AI:",
-        attemptErrors.slice(-3).join(" | ")
-      );
+      await saveLastCheckLog({
+        timestamp: Date.now(),
+        marketOpen: true,
+        signalDetected: true,
+        consecutiveSignalCount,
+        alertSent: false,
+        message: "Filtro superato ma elaborazione AI fallita",
+        currentPrice: indicators.currentPrice,
+        authType,
+        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+        motivi: filterResult.motivi,
+      });
+
       return NextResponse.json({
         checked: true,
         marketOpen: true,
@@ -432,6 +509,25 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
       await recordAlertSent(now);
     }
 
+    const outcomeMessage = isAiConfirmed
+      ? telegramSent
+        ? "Alert inviato con successo su Telegram"
+        : "Alert confermato dall'AI (errore nell'invio Telegram)"
+      : "Segnale persistente non confermato dall'analisi AI";
+
+    await saveLastCheckLog({
+      timestamp: Date.now(),
+      marketOpen: true,
+      signalDetected: true,
+      consecutiveSignalCount: isAiConfirmed ? 0 : consecutiveSignalCount,
+      alertSent: telegramSent,
+      message: outcomeMessage,
+      currentPrice: indicators.currentPrice,
+      authType,
+      condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+      motivi: filterResult.motivi,
+    });
+
     const responsePayload: CheckMarketApiResponse = {
       checked: true,
       marketOpen: true,
@@ -464,6 +560,16 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
     const errorMsg =
       err instanceof Error ? err.message : "Errore durante il controllo di mercato";
     console.error("[CHECK-MARKET API Error]:", err);
+
+    await saveLastCheckLog({
+      timestamp: Date.now(),
+      marketOpen: true,
+      signalDetected: false,
+      consecutiveSignalCount: 0,
+      alertSent: false,
+      message: `Errore di sistema: ${errorMsg}`,
+      authType,
+    });
 
     return NextResponse.json(
       {

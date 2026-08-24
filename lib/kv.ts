@@ -3,12 +3,28 @@ import { Redis } from "@upstash/redis";
 // Chiavi di persistenza su Redis / Vercel KV
 export const KV_KEY_LAST_ALERT_TIMESTAMP = "market:lastAlertTimestamp";
 export const KV_KEY_CONSECUTIVE_SIGNAL_COUNT = "market:consecutiveSignalCount";
+export const KV_KEY_LAST_CHECK_LOG = "lastCheckLog";
+
+export interface MarketCheckLog {
+  timestamp: number;
+  marketOpen: boolean;
+  signalDetected: boolean;
+  consecutiveSignalCount: number;
+  alertSent: boolean;
+  message: string;
+  currentPrice?: number;
+  authType?: string;
+  condizioniSoddisfatte?: number;
+  motivi?: string[];
+}
 
 // Fallback in-memory per sviluppo locale / assenza credenziali Redis
 const inMemoryState = {
   lastAlertTimestamp: 0,
   consecutiveSignalCount: 0,
 };
+
+let inMemoryLastCheckLog: MarketCheckLog | null = null;
 
 /**
  * Inizializza il client Redis rilevando automaticamente sia le variabili
@@ -151,5 +167,42 @@ export async function recordAlertSent(
     ]);
   } catch (error) {
     console.warn("[KV Storage] Errore salvataggio alert sent:", error);
+  }
+}
+
+/**
+ * Salva il log dettagliato dell'ultimo controllo di mercato su Redis
+ * con un TTL di 24 ore (86400 secondi).
+ */
+export async function saveLastCheckLog(log: MarketCheckLog): Promise<void> {
+  const redis = getRedisClient();
+  inMemoryLastCheckLog = log;
+
+  if (!redis) return;
+
+  try {
+    // TTL: 24 ore = 86400 secondi
+    await redis.set(KV_KEY_LAST_CHECK_LOG, log, { ex: 86400 });
+  } catch (error) {
+    console.warn("[KV Storage] Errore salvataggio lastCheckLog:", error);
+  }
+}
+
+/**
+ * Recupera l'ultimo log di controllo mercato salvato su Redis.
+ */
+export async function getLastCheckLog(): Promise<MarketCheckLog | null> {
+  const redis = getRedisClient();
+
+  if (!redis) {
+    return inMemoryLastCheckLog;
+  }
+
+  try {
+    const log = await redis.get<MarketCheckLog>(KV_KEY_LAST_CHECK_LOG);
+    return log || inMemoryLastCheckLog;
+  } catch (error) {
+    console.warn("[KV Storage] Errore recupero lastCheckLog:", error);
+    return inMemoryLastCheckLog;
   }
 }
