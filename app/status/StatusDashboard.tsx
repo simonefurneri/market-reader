@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useTransition, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   RefreshCw,
   Clock,
@@ -27,36 +26,55 @@ interface StatusDashboardProps {
 const STATUS_REFRESH_INTERVAL_SECONDS = 30;
 
 export function StatusDashboard({ initialLog }: StatusDashboardProps) {
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const [log, setLog] = useState<MarketCheckLog | null>(initialLog);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [countdown, setCountdown] = useState<number>(STATUS_REFRESH_INTERVAL_SECONDS);
   const [currentTime, setCurrentTime] = useState<number>(() => Date.now());
 
-  const handleRefresh = useCallback(() => {
+  const fetchLatestLog = useCallback(async () => {
     setIsRefreshing(true);
-    setCountdown(STATUS_REFRESH_INTERVAL_SECONDS);
-    startTransition(() => {
-      router.refresh();
-      setTimeout(() => setIsRefreshing(false), 500);
-    });
-  }, [router]);
+    try {
+      const res = await fetch("/api/status-log");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.log) {
+          setLog(data.log);
+        }
+      }
+    } catch (err) {
+      console.warn("[StatusDashboard] Errore aggiornamento log:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, []);
 
-  // Countdown timer e auto-refresh ogni 30 secondi
+  const handleManualRefresh = () => {
+    setCountdown(STATUS_REFRESH_INTERVAL_SECONDS);
+    fetchLatestLog();
+  };
+
+  // Timer per il countdown decrescente e aggiornamento del tempo relativo
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(Date.now());
       setCountdown((prev) => {
         if (prev <= 1) {
-          handleRefresh();
-          return STATUS_REFRESH_INTERVAL_SECONDS;
+          return 0;
         }
         return prev - 1;
       });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [handleRefresh]);
+  }, []);
+
+  // Quando il countdown raggiunge 0, esegue il fetch fuori dalla pipeline di rendering
+  useEffect(() => {
+    if (countdown === 0) {
+      setCountdown(STATUS_REFRESH_INTERVAL_SECONDS);
+      fetchLatestLog();
+    }
+  }, [countdown, fetchLatestLog]);
 
   const formatDateTime = (timestamp: number) => {
     if (!timestamp || timestamp === 0) return "Nessun dato registrato";
@@ -102,23 +120,19 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
         </div>
 
         <button
-          onClick={handleRefresh}
-          disabled={isRefreshing || isPending}
+          onClick={handleManualRefresh}
+          disabled={isRefreshing}
           className="self-start sm:self-auto inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition-all active:scale-95 font-mono"
         >
           <RefreshCw
-            className={`w-3.5 h-3.5 ${
-              isRefreshing || isPending ? "animate-spin" : ""
-            }`}
+            className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`}
           />
-          {isRefreshing || isPending
-            ? "Aggiornamento..."
-            : `Aggiorna (${countdown}s)`}
+          {isRefreshing ? "Aggiornamento..." : `Aggiorna (${countdown}s)`}
         </button>
       </div>
 
       {/* Main Status Cards */}
-      {!initialLog ? (
+      {!log ? (
         <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-8 text-center">
           <Database className="w-10 h-10 text-slate-600 mx-auto mb-3" />
           <h3 className="text-base font-semibold text-slate-300">
@@ -146,10 +160,10 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
               </div>
               <div>
                 <div className="text-base font-bold text-white font-mono">
-                  {getTimeAgo(initialLog.timestamp)}
+                  {getTimeAgo(log.timestamp)}
                 </div>
                 <div className="text-[11px] text-slate-400 mt-0.5">
-                  {formatDateTime(initialLog.timestamp)}
+                  {formatDateTime(log.timestamp)}
                 </div>
               </div>
             </div>
@@ -160,7 +174,7 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
                 <span className="text-xs font-medium uppercase tracking-wider">
                   Stato Mercato
                 </span>
-                {initialLog.marketOpen ? (
+                {log.marketOpen ? (
                   <Activity className="w-4 h-4 text-emerald-400 animate-pulse" />
                 ) : (
                   <Moon className="w-4 h-4 text-amber-400" />
@@ -169,17 +183,15 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
               <div>
                 <div
                   className={`text-base font-bold flex items-center gap-1.5 ${
-                    initialLog.marketOpen ? "text-emerald-400" : "text-amber-400"
+                    log.marketOpen ? "text-emerald-400" : "text-amber-400"
                   }`}
                 >
                   <span
                     className={`w-2 h-2 rounded-full ${
-                      initialLog.marketOpen
-                        ? "bg-emerald-400"
-                        : "bg-amber-400"
+                      log.marketOpen ? "bg-emerald-400" : "bg-amber-400"
                     }`}
                   />
-                  {initialLog.marketOpen ? "Aperto (24h)" : "Chiuso"}
+                  {log.marketOpen ? "Aperto (24h)" : "Chiuso"}
                 </div>
                 <div className="text-[11px] text-slate-400 mt-0.5 truncate">
                   XAU/USD Forex Session
@@ -197,7 +209,7 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
               </div>
               <div>
                 <div className="text-base font-bold text-white flex items-center gap-2 font-mono">
-                  <span>{initialLog.consecutiveSignalCount} / 3</span>
+                  <span>{log.consecutiveSignalCount} / 3</span>
                   <span className="text-xs font-normal text-slate-400">
                     controlli
                   </span>
@@ -206,15 +218,15 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
                 <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                   <div
                     className={`h-full transition-all duration-500 ${
-                      initialLog.consecutiveSignalCount >= 3
+                      log.consecutiveSignalCount >= 3
                         ? "bg-emerald-500"
-                        : initialLog.consecutiveSignalCount > 0
+                        : log.consecutiveSignalCount > 0
                         ? "bg-blue-500"
                         : "bg-slate-700"
                     }`}
                     style={{
                       width: `${Math.min(
-                        (initialLog.consecutiveSignalCount / 3) * 100,
+                        (log.consecutiveSignalCount / 3) * 100,
                         100
                       )}%`,
                     }}
@@ -234,10 +246,10 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
               <div>
                 <div
                   className={`text-base font-bold flex items-center gap-1.5 ${
-                    initialLog.alertSent ? "text-emerald-400" : "text-slate-300"
+                    log.alertSent ? "text-emerald-400" : "text-slate-300"
                   }`}
                 >
-                  {initialLog.alertSent ? (
+                  {log.alertSent ? (
                     <>
                       <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                       Inviato
@@ -260,11 +272,11 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
                 <Info className="w-4 h-4 text-blue-400" />
                 Dettaglio Ultimo Esito
               </h2>
-              {initialLog.currentPrice && (
+              {log.currentPrice && (
                 <div className="text-xs text-slate-400 font-mono bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700">
                   Prezzo XAU/USD:{" "}
                   <span className="text-emerald-400 font-semibold">
-                    ${initialLog.currentPrice.toFixed(2)}
+                    ${log.currentPrice.toFixed(2)}
                   </span>
                 </div>
               )}
@@ -273,32 +285,32 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
             {/* Main Outcome Message Box */}
             <div
               className={`p-4 rounded-lg border text-sm flex items-start gap-3 ${
-                initialLog.alertSent
+                log.alertSent
                   ? "bg-emerald-950/30 border-emerald-500/30 text-emerald-200"
-                  : initialLog.signalDetected
+                  : log.signalDetected
                   ? "bg-blue-950/30 border-blue-500/30 text-blue-200"
                   : "bg-slate-800/40 border-slate-700/60 text-slate-300"
               }`}
             >
-              {initialLog.alertSent ? (
+              {log.alertSent ? (
                 <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-              ) : initialLog.signalDetected ? (
+              ) : log.signalDetected ? (
                 <AlertTriangle className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
               ) : (
                 <ShieldCheck className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
               )}
               <div className="space-y-1">
                 <div className="font-semibold text-white">
-                  {initialLog.message}
+                  {log.message}
                 </div>
-                {initialLog.motivi && initialLog.motivi.length > 0 && (
+                {log.motivi && log.motivi.length > 0 && (
                   <div className="pt-2 text-xs space-y-1 text-slate-300">
                     <div className="font-medium text-slate-400">
                       Condizioni Rilevate (
-                      {initialLog.condizioniSoddisfatte ?? 0}/3):
+                      {log.condizioniSoddisfatte ?? 0}/3):
                     </div>
                     <ul className="list-disc list-inside space-y-0.5 pl-1">
-                      {initialLog.motivi.map((m, idx) => (
+                      {log.motivi.map((m, idx) => (
                         <li key={idx}>{m}</li>
                       ))}
                     </ul>
@@ -312,7 +324,7 @@ export function StatusDashboard({ initialLog }: StatusDashboardProps) {
               <div>
                 <span className="text-slate-500">Metodo Autenticazione:</span>{" "}
                 <span className="text-slate-300 font-mono">
-                  {initialLog.authType?.toUpperCase() || "CRON_SECRET / QSTASH"}
+                  {log.authType?.toUpperCase() || "CRON_SECRET / QSTASH"}
                 </span>
               </div>
               <div>
