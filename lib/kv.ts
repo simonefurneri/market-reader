@@ -4,6 +4,7 @@ import { Redis } from "@upstash/redis";
 export const KV_KEY_LAST_ALERT_TIMESTAMP = "market:lastAlertTimestamp";
 export const KV_KEY_CONSECUTIVE_SIGNAL_COUNT = "market:consecutiveSignalCount";
 export const KV_KEY_LAST_CHECK_LOG = "lastCheckLog";
+export const KV_KEY_CHECK_HISTORY = "checkHistory";
 
 export interface MarketCheckLog {
   timestamp: number;
@@ -12,10 +13,18 @@ export interface MarketCheckLog {
   consecutiveSignalCount: number;
   alertSent: boolean;
   message: string;
+  messaggio?: string;
   currentPrice?: number;
   authType?: string;
   condizioniSoddisfatte?: number;
   motivi?: string[];
+  // Valori grezzi degli indicatori tecnici usati per la decisione
+  rsi?: number | null;
+  atr?: number | null;
+  atrAvg?: number | null;
+  breakoutDetected?: boolean;
+  levelBroken?: number | null;
+  breakoutType?: "resistenza" | "supporto" | null;
 }
 
 // Fallback in-memory per sviluppo locale / assenza credenziali Redis
@@ -25,6 +34,7 @@ const inMemoryState = {
 };
 
 let inMemoryLastCheckLog: MarketCheckLog | null = null;
+let inMemoryCheckHistory: MarketCheckLog[] = [];
 
 /**
  * Inizializza il client Redis rilevando automaticamente sia le variabili
@@ -172,19 +182,33 @@ export async function recordAlertSent(
 
 /**
  * Salva il log dettagliato dell'ultimo controllo di mercato su Redis
- * con un TTL di 24 ore (86400 secondi).
+ * con un TTL di 24 ore (86400 secondi) e aggiunge l'entry alla lista "checkHistory"
+ * troncandola a un massimo di 288 elementi (24 ore di check ogni 5 minuti).
  */
 export async function saveLastCheckLog(log: MarketCheckLog): Promise<void> {
   const redis = getRedisClient();
   inMemoryLastCheckLog = log;
 
+  // Gestione fallback in-memory (massimo 288 elementi)
+  inMemoryCheckHistory.unshift(log);
+  if (inMemoryCheckHistory.length > 288) {
+    inMemoryCheckHistory = inMemoryCheckHistory.slice(0, 288);
+  }
+
   if (!redis) return;
 
   try {
-    // TTL: 24 ore = 86400 secondi
-    await redis.set(KV_KEY_LAST_CHECK_LOG, log, { ex: 86400 });
+    // 1. Salva ultimo log con TTL 24h
+    // 2. LPUSH su checkHistory
+    // 3. LTRIM checkHistory a 288 elementi (indici da 0 a 287 inclusi)
+    await Promise.all([
+      redis.set(KV_KEY_LAST_CHECK_LOG, log, { ex: 86400 }),
+      redis.lpush(KV_KEY_CHECK_HISTORY, log).then(() =>
+        redis.ltrim(KV_KEY_CHECK_HISTORY, 0, 287)
+      ),
+    ]);
   } catch (error) {
-    console.warn("[KV Storage] Errore salvataggio lastCheckLog:", error);
+    console.warn("[KV Storage] Errore salvataggio lastCheckLog / checkHistory:", error);
   }
 }
 
@@ -204,5 +228,45 @@ export async function getLastCheckLog(): Promise<MarketCheckLog | null> {
   } catch (error) {
     console.warn("[KV Storage] Errore recupero lastCheckLog:", error);
     return inMemoryLastCheckLog;
+  }
+}
+
+/**
+ * Recupera lo storico dei controlli di mercato dalla lista Redis "checkHistory",
+ * ordinati dal più recente al più vecchio (fino a un massimo di `limit` elementi, default 288).
+ */
+export async function getCheckHistory(
+  limit: number = 288
+): Promise<MarketCheckLog[]> {
+  const redis = getRedisClient();
+
+  if (!redis) {
+    return inMemoryCheckHistory.slice(0, limit);
+  }
+
+  try {
+    const rawList = await redis.lrange<MarketCheckLog | string>(
+      KV_KEY_CHECK_HISTORY,
+      0,
+      limit - 1
+    );
+
+    if (!rawList || rawList.length === 0) {
+      return inMemoryCheckHistory.slice(0, limit);
+    }
+
+    return rawList.map((item) => {
+      if (typeof item === "string") {
+        try {
+          return JSON.parse(item) as MarketCheckLog;
+        } catch {
+          return item as unknown as MarketCheckLog;
+        }
+      }
+      return item as MarketCheckLog;
+    });
+  } catch (error) {
+    console.warn("[KV Storage] Errore recupero checkHistory da Redis:", error);
+    return inMemoryCheckHistory.slice(0, limit);
   }
 }

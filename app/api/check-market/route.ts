@@ -140,6 +140,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
         alertSent: false,
         message: `Mercato chiuso (${marketStatus.message})`,
         authType,
+        rsi: null,
+        atr: null,
+        atrAvg: null,
+        breakoutDetected: false,
+        levelBroken: null,
+        breakoutType: null,
       });
 
       return NextResponse.json(
@@ -172,6 +178,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
         alertSent: false,
         message: "Errore recupero candele Twelve Data",
         authType,
+        rsi: null,
+        atr: null,
+        atrAvg: null,
+        breakoutDetected: false,
+        levelBroken: null,
+        breakoutType: null,
       });
 
       return NextResponse.json(
@@ -192,6 +204,16 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
     // --------------------------------------------------------------------------
     const filterResult = checkPotentialOpportunity(indicators, candles);
 
+    // Indicatori grezzi usati per la decisione
+    const rawRsi = filterResult.dettagli.rsiValore ?? indicators.rsi14 ?? null;
+    const rawAtr = filterResult.dettagli.atrAttuale ?? indicators.atr14 ?? null;
+    const rawAtrAvg = filterResult.dettagli.atrMediaStorica ?? null;
+    const rawBreakoutDetected = Boolean(
+      filterResult.dettagli.breakoutResistenza || filterResult.dettagli.breakoutSupporto
+    );
+    const rawLevelBroken = filterResult.dettagli.livelloRotto ?? null;
+    const rawBreakoutType = filterResult.dettagli.tipoBreakout ?? null;
+
     // --------------------------------------------------------------------------
     // STEP 4: GESTIONE PERSISTENZA SEGNALI CON VERCEL KV / UPSTASH REDIS
     // --------------------------------------------------------------------------
@@ -211,6 +233,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
         authType,
         condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
         motivi: filterResult.motivi,
+        rsi: rawRsi,
+        atr: rawAtr,
+        atrAvg: rawAtrAvg,
+        breakoutDetected: rawBreakoutDetected,
+        levelBroken: rawLevelBroken,
+        breakoutType: rawBreakoutType,
       });
 
       const responsePayload: CheckMarketApiResponse = {
@@ -250,6 +278,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
         authType,
         condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
         motivi: filterResult.motivi,
+        rsi: rawRsi,
+        atr: rawAtr,
+        atrAvg: rawAtrAvg,
+        breakoutDetected: rawBreakoutDetected,
+        levelBroken: rawLevelBroken,
+        breakoutType: rawBreakoutType,
       });
 
       const responsePayload: CheckMarketApiResponse = {
@@ -292,6 +326,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
         authType,
         condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
         motivi: filterResult.motivi,
+        rsi: rawRsi,
+        atr: rawAtr,
+        atrAvg: rawAtrAvg,
+        breakoutDetected: rawBreakoutDetected,
+        levelBroken: rawLevelBroken,
+        breakoutType: rawBreakoutType,
       });
 
       const responsePayload: CheckMarketApiResponse = {
@@ -354,6 +394,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
         authType,
         condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
         motivi: filterResult.motivi,
+        rsi: rawRsi,
+        atr: rawAtr,
+        atrAvg: rawAtrAvg,
+        breakoutDetected: rawBreakoutDetected,
+        levelBroken: rawLevelBroken,
+        breakoutType: rawBreakoutType,
       });
 
       return NextResponse.json({
@@ -414,6 +460,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
       authType,
       condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
       motivi: filterResult.motivi,
+      rsi: rawRsi,
+      atr: rawAtr,
+      atrAvg: rawAtrAvg,
+      breakoutDetected: rawBreakoutDetected,
+      levelBroken: rawLevelBroken,
+      breakoutType: rawBreakoutType,
     });
 
     const responsePayload: CheckMarketApiResponse = {
@@ -457,6 +509,12 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
       alertSent: false,
       message: `Errore di sistema: ${errorMsg}`,
       authType,
+      rsi: null,
+      atr: null,
+      atrAvg: null,
+      breakoutDetected: false,
+      levelBroken: null,
+      breakoutType: null,
     });
 
     return NextResponse.json(
