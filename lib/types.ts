@@ -76,6 +76,18 @@ export interface AnalysisSummary {
   notes?: string[];
 }
 
+export interface OpportunityFilterInput {
+  currentPrice: number;
+  ema20?: number | null;
+  ema50?: number | null;
+  rsi14?: number | null;
+  atr14?: number | null;
+  supports?: number[];
+  resistances?: number[];
+  candles?: CandleData[];
+  promptSummary?: string;
+}
+
 export interface OpportunityFilterDetails {
   breakoutResistenza: boolean;
   breakoutSupporto: boolean;
@@ -99,6 +111,7 @@ export interface OpportunityFilterResult {
   motivi: string[];
   dettagli: OpportunityFilterDetails;
 }
+
 
 export interface OperationalParameters {
   opportunita_valida?: boolean;

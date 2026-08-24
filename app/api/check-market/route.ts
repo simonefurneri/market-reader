@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
 import { getXAUUSD15mCandles } from "@/lib/marketData";
 import { calculateTechnicalIndicators } from "@/lib/indicators";
 import { checkPotentialOpportunity } from "@/lib/opportunityFilter";
+import { analyzeMarket } from "@/lib/analyzeMarket";
 import { sendTelegramMarketAlert } from "@/lib/telegram";
 import { getMarketHoursStatus, isMarketOpen } from "@/lib/marketHours";
 import { verifyQStashSignature } from "@/lib/qstash";
@@ -36,51 +36,6 @@ const REQUIRED_CONSECUTIVE_SIGNALS = 3;
  * Default: 60 minuti.
  */
 const ALERT_COOLDOWN_MINUTES = 60;
-
-// Modelli Gemini con fallback in ordine di priorità
-const FALLBACK_MODELS = [
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "gemini-3.5-flash-lite",
-  "gemini-3.1-flash-lite",
-  "gemini-flash-latest",
-];
-
-const MAX_RETRIES_PER_MODEL = 2;
-
-const EXTENDED_SYSTEM_PROMPT = `Sei un assistente esperto di analisi tecnica che aiuta a LEGGERE e interpretare il mercato XAUUSD (Oro) su timeframe 15m.
-Il sistema di screening algoritmico ha identificato un SEGNALE CONFERMATO persistente (almeno 2 condizioni tecniche contemporanee confermate per più controlli consecutivi).
-
-Il tuo compito è analizzare la situazione tecnica e rispondere ESCLUSIVAMENTE in formato JSON con la seguente struttura:
-{
-  "conferma_opportunita": boolean (true se la configurazione tecnica giustifica un setup coerente, false se è falso segnale o mercato troppo incerto),
-  "trend": "rialzista" | "ribassista" | "laterale",
-  "forza_trend": "debole" | "moderata" | "forte",
-  "volatilita": "bassa" | "media" | "alta",
-  "livelli_chiave": ["string", "string"],
-  "scenario_probabile": "string (2-3 frasi chiare che spiegano la dinamica dei prezzi)",
-  "cosa_osservare": "string (1-2 frasi sui fattori scatenanti o conferme da attendere)",
-  "parametri_operativi": {
-    "opportunita_valida": boolean,
-    "tipo_operazione": "long" | "short" | "nessuna",
-    "entry_price": "string (es. $2350.50) o null se non opportuno",
-    "stop_loss": "string (es. $2343.00 basato su supporti/ATR) o null",
-    "take_profit": "string (es. $2365.00 basato su resistenze/RR) o null",
-    "rischio": "string (IMPORTANTE: chiarisci SEMPRE in modo esplicito che questi livelli sono calcolati esclusivamente sui soli indicatori tecnici e non costituiscono garanzie di profitto né consigli finanziari)"
-  },
-  "mercato_chiuso": boolean
-}
-
-Regole fondamentali:
-1. NON dare consigli finanziari o promesse di guadagno.
-2. I parametri operativi (entry, stop loss, take profit) devono essere indicativi e strettamente coerenti con i supporti, le resistenze, le EMA e la volatilità ATR fornita.
-3. Se il mercato è privo di una direzione pulita, imposta "conferma_opportunita": false e "tipo_operazione": "nessuna".
-4. Il campo "rischio" deve SEMPRE contenere il disclaimer che i parametri sono calcolati puramente su indicatori tecnici.`;
-
-async function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Verifica l'autenticazione della richiesta:
@@ -362,99 +317,32 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
     }
 
     // --------------------------------------------------------------------------
-    // STEP 5: SEGNALE PERSISTENTE E COOLDOWN SUPERATO -> CHIAMATA GEMINI AI
+    // STEP 5: SEGNALE PERSISTENTE E COOLDOWN SUPERATO -> ANALISI GEMINI UNIFICATA
     // --------------------------------------------------------------------------
-    const apiKey = process.env.GEMINI_API_KEY?.trim();
-    if (!apiKey) {
-      await saveLastCheckLog({
-        timestamp: Date.now(),
-        marketOpen: true,
-        signalDetected: true,
-        consecutiveSignalCount,
-        alertSent: false,
-        message: "Segnale persistente ma GEMINI_API_KEY non configurata",
-        currentPrice: indicators.currentPrice,
-        authType,
-        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
-        motivi: filterResult.motivi,
-      });
-
-      return NextResponse.json({
-        checked: true,
-        marketOpen: true,
-        alert: false,
-        warning:
-          "Segnale persistente confermato dal filtro locale, ma GEMINI_API_KEY non configurata.",
-        filterResult,
-      });
-    }
-
-    // Preparazione prompt arricchito con dettagli del filtro
-    const reasonsText = filterResult.motivi.join("\n- ");
-    const userPrompt = `Stato Mercato: ${marketStatus.message} (Chiuso: ${marketStatus.isClosed ? "Sì" : "No"})
-Filtro Locale Segnali Rilevati (${consecutiveSignalCount} controlli consecutivi):
-- ${reasonsText}
-
-Dati Tecnici Attuali su XAUUSD (15m):
-${indicators.promptSummary}
-
-Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i livelli indicativi di Entry, Stop Loss (basato su S1/S2 o ATR) e Take Profit (basato su R1/R2 o risk/reward) inserendo l'obbligatorio testo di chiarimento nel campo "rischio".`;
-
-    const systemPrompt = EXTENDED_SYSTEM_PROMPT;
-
-    const ai = new GoogleGenAI({ apiKey });
     let aiAnalysis: ExtendedMarketAnalysisResponse | null = null;
     let modelUsed: string | null = null;
-    const attemptErrors: string[] = [];
 
-    // Fallback automatico sui modelli Gemini disponibili
-    for (const model of FALLBACK_MODELS) {
-      for (let attempt = 1; attempt <= MAX_RETRIES_PER_MODEL; attempt++) {
-        try {
-          const response = await ai.models.generateContent({
-            model,
-            contents: userPrompt,
-            config: {
-              systemInstruction: systemPrompt,
-              responseMimeType: "application/json",
-              temperature: 0.2,
-            },
-          });
+    try {
+      const analyzeResponse = await analyzeMarket(indicators, {
+        skipGeminiIfNoSignal: true,
+        candles,
+      });
 
-          const responseText = response.text?.trim() || "";
-          if (!responseText) {
-            throw new Error(`Risposta vuota ricevuta dal modello ${model}`);
-          }
-
-          try {
-            aiAnalysis = JSON.parse(responseText) as ExtendedMarketAnalysisResponse;
-          } catch {
-            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              aiAnalysis = JSON.parse(jsonMatch[0]) as ExtendedMarketAnalysisResponse;
-            } else {
-              throw new Error("Formato JSON non valido nella risposta AI");
-            }
-          }
-
-          if (aiAnalysis) {
-            aiAnalysis.mercato_chiuso = marketStatus.isClosed;
-            modelUsed = model;
-            break;
-          }
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          attemptErrors.push(`[${model} tent ${attempt}]: ${errorMsg}`);
-          if (attempt < MAX_RETRIES_PER_MODEL) {
-            await sleep(350);
-          }
-        }
+      if (!analyzeResponse) {
+        // Se null (nessun segnale valido per analyzeMarket), esce pulito
+        return NextResponse.json({
+          checked: true,
+          marketOpen: true,
+          alert: false,
+          reason: filterResult.motivazione,
+          filterResult,
+        });
       }
 
-      if (aiAnalysis) break;
-    }
-
-    if (!aiAnalysis) {
+      aiAnalysis = analyzeResponse;
+      modelUsed = analyzeResponse.modelUsed || null;
+    } catch (aiErr) {
+      console.error("[CHECK-MARKET] Errore elaborazione AI:", aiErr);
       await saveLastCheckLog({
         timestamp: Date.now(),
         marketOpen: true,

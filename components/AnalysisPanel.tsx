@@ -14,10 +14,14 @@ import {
   AlertTriangle,
   ShieldAlert,
   Moon,
+  Target,
 } from "lucide-react";
 import { fetchMarketData } from "@/lib/marketData";
 import { calculateTechnicalIndicators } from "@/lib/indicators";
-import { MarketAnalysisResponse, TechnicalIndicatorsSummary } from "@/lib/types";
+import {
+  ExtendedMarketAnalysisResponse,
+  TechnicalIndicatorsSummary,
+} from "@/lib/types";
 
 export interface AnalysisPanelProps {
   autoRefreshIntervalSeconds?: number;
@@ -26,8 +30,10 @@ export interface AnalysisPanelProps {
 export function AnalysisPanel({
   autoRefreshIntervalSeconds = 90, // Aggiornamento ogni 90 secondi per ottimizzare le chiamate AI
 }: AnalysisPanelProps) {
-  const [analysis, setAnalysis] = useState<MarketAnalysisResponse | null>(null);
-  const [indicators, setIndicators] = useState<TechnicalIndicatorsSummary | null>(null);
+  const [analysis, setAnalysis] =
+    useState<ExtendedMarketAnalysisResponse | null>(null);
+  const [indicators, setIndicators] =
+    useState<TechnicalIndicatorsSummary | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +59,7 @@ export function AnalysisPanel({
       const calculatedIndicators = calculateTechnicalIndicators(candles);
       setIndicators(calculatedIndicators);
 
-      // 3. Chiamata alla route /api/analyze con fallback multi-modello
+      // 3. Chiamata alla route /api/analyze (con analyzeMarket unificato)
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {
@@ -68,7 +74,7 @@ export function AnalysisPanel({
         throw new Error(result.error || `Errore HTTP ${response.status}`);
       }
 
-      setAnalysis(result.data as MarketAnalysisResponse);
+      setAnalysis(result.data as ExtendedMarketAnalysisResponse);
       if (result.modelUsed) {
         setModelUsed(result.modelUsed);
       }
@@ -183,7 +189,9 @@ export function AnalysisPanel({
             title="Ricalcola analisi ora"
           >
             <RefreshCw
-              className={`w-3.5 h-3.5 ${refreshing ? "animate-spin text-purple-400" : ""}`}
+              className={`w-3.5 h-3.5 ${
+                refreshing ? "animate-spin text-purple-400" : ""
+              }`}
             />
           </button>
         </div>
@@ -293,6 +301,72 @@ export function AnalysisPanel({
                 </div>
               </div>
             )}
+
+            {/* Sezione Evidenziata: Parametri Operativi Indicativi (visibile se presenti) */}
+            {analysis.parametri_operativi &&
+              (analysis.parametri_operativi.entry_price ||
+                analysis.parametri_operativi.stop_loss ||
+                analysis.parametri_operativi.take_profit) && (
+                <div className="p-3.5 rounded-lg bg-gradient-to-br from-blue-950/40 via-slate-850 to-purple-950/30 border border-blue-500/30 shadow-sm space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-blue-300">
+                      <Target className="w-4 h-4 text-blue-400" />
+                      <span>Parametri Operativi Indicativi</span>
+                    </div>
+                    {analysis.parametri_operativi.tipo_operazione &&
+                      analysis.parametri_operativi.tipo_operazione !==
+                        "nessuna" && (
+                        <span
+                          className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
+                            analysis.parametri_operativi.tipo_operazione ===
+                            "long"
+                              ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                              : "bg-red-500/20 text-red-300 border-red-500/40"
+                          }`}
+                        >
+                          {analysis.parametri_operativi.tipo_operazione}
+                        </span>
+                      )}
+                  </div>
+
+                  {/* Griglia Valori: Entry, Stop Loss, Take Profit */}
+                  <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                    <div className="p-2 rounded bg-slate-900/80 border border-slate-700/60">
+                      <div className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                        Entry
+                      </div>
+                      <div className="text-xs font-bold text-white font-mono mt-0.5 truncate">
+                        {analysis.parametri_operativi.entry_price || "--"}
+                      </div>
+                    </div>
+
+                    <div className="p-2 rounded bg-slate-900/80 border border-red-500/30">
+                      <div className="text-[10px] font-medium text-red-400 uppercase tracking-wider">
+                        Stop Loss
+                      </div>
+                      <div className="text-xs font-bold text-red-300 font-mono mt-0.5 truncate">
+                        {analysis.parametri_operativi.stop_loss || "--"}
+                      </div>
+                    </div>
+
+                    <div className="p-2 rounded bg-slate-900/80 border border-emerald-500/30">
+                      <div className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
+                        Take Profit
+                      </div>
+                      <div className="text-xs font-bold text-emerald-300 font-mono mt-0.5 truncate">
+                        {analysis.parametri_operativi.take_profit || "--"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Disclaimer Rischio Specifico */}
+                  {analysis.parametri_operativi.rischio && (
+                    <p className="text-[10px] text-slate-400 italic leading-relaxed pt-1 border-t border-slate-700/40">
+                      ⚠️ {analysis.parametri_operativi.rischio}
+                    </p>
+                  )}
+                </div>
+              )}
 
             {/* Scenario Probabile */}
             <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50">
