@@ -118,6 +118,7 @@ export interface CheckMarketApiResponse {
   checked: boolean;
   alert: boolean;
   marketOpen?: boolean;
+  authType?: "qstash" | "cron_secret" | "none";
   signalObserving?: boolean;
   consecutiveSignalCount?: number;
   requiredConsecutiveSignals?: number;

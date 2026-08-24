@@ -5,6 +5,7 @@ import { calculateTechnicalIndicators } from "@/lib/indicators";
 import { checkPotentialOpportunity } from "@/lib/opportunityFilter";
 import { sendTelegramMarketAlert } from "@/lib/telegram";
 import { getMarketHoursStatus, isMarketOpen } from "@/lib/marketHours";
+import { verifyQStashSignature } from "@/lib/qstash";
 import {
   getMarketStorageState,
   incrementConsecutiveSignalCount,
@@ -34,7 +35,6 @@ const REQUIRED_CONSECUTIVE_SIGNALS = 3;
  * Default: 60 minuti.
  */
 const ALERT_COOLDOWN_MINUTES = 60;
-
 
 // Modelli Gemini con fallback in ordine di priorità
 const FALLBACK_MODELS = [
@@ -82,47 +82,89 @@ async function sleep(ms: number) {
 }
 
 /**
- * Verifica l'autorizzazione della richiesta confrontando il segreto fornito
- * con la variabile d'ambiente CRON_SECRET.
+ * Verifica l'autenticazione della richiesta:
+ * 1. Tramite firma crittografica Upstash QStash (header `Upstash-Signature`)
+ * 2. Oppure tramite header segreto `CRON_SECRET` come fallback per test manuali
  */
-function isAuthorized(req: NextRequest): boolean {
+async function authenticateRequest(
+  req: NextRequest,
+  rawBody: string
+): Promise<{ isAuthorized: boolean; authType: "qstash" | "cron_secret" | "none" }> {
+  // 1. Verifica firma QStash (se presente)
+  const qstashSignature =
+    req.headers.get("upstash-signature") || req.headers.get("Upstash-Signature");
+
+  if (qstashSignature) {
+    const isValidQStash = await verifyQStashSignature(
+      qstashSignature,
+      rawBody,
+      req.url
+    );
+
+    if (isValidQStash) {
+      return { isAuthorized: true, authType: "qstash" };
+    }
+  }
+
+  // 2. Fallback su CRON_SECRET per chiamate manuali / curl / scheduler alternativi
   const cronSecret = process.env.CRON_SECRET?.trim();
 
-  if (!cronSecret) {
+  if (cronSecret) {
+    const authHeader = req.headers.get("authorization")?.trim();
+    const customHeader = req.headers.get("x-cron-secret")?.trim();
+    const querySecret = req.nextUrl.searchParams.get("secret")?.trim();
+
+    if (customHeader && customHeader === cronSecret) {
+      return { isAuthorized: true, authType: "cron_secret" };
+    }
+    if (querySecret && querySecret === cronSecret) {
+      return { isAuthorized: true, authType: "cron_secret" };
+    }
+    if (authHeader) {
+      const token = authHeader.startsWith("Bearer ")
+        ? authHeader.slice(7).trim()
+        : authHeader;
+      if (token === cronSecret) {
+        return { isAuthorized: true, authType: "cron_secret" };
+      }
+    }
+  } else if (!qstashSignature) {
+    // Se né QStash né CRON_SECRET sono configurati (es. primo test locale), logghiamo warning
     console.warn(
-      "[CHECK-MARKET] CRON_SECRET non configurato nelle variabili d'ambiente."
+      "[CHECK-MARKET] Nessun metodo di sicurezza (QSTASH o CRON_SECRET) configurato."
     );
-    return true;
+    return { isAuthorized: true, authType: "none" };
   }
 
-  const authHeader = req.headers.get("authorization")?.trim();
-  const customHeader = req.headers.get("x-cron-secret")?.trim();
-  const querySecret = req.nextUrl.searchParams.get("secret")?.trim();
-
-  if (customHeader && customHeader === cronSecret) return true;
-  if (querySecret && querySecret === cronSecret) return true;
-
-  if (authHeader) {
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.slice(7).trim()
-      : authHeader;
-    if (token === cronSecret) return true;
-  }
-
-  return false;
+  return { isAuthorized: false, authType: "none" };
 }
 
-export async function GET(req: NextRequest): Promise<NextResponse> {
+/**
+ * Gestore unificato per le richieste di controllo mercato (supporta GET e POST).
+ */
+async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
+  // Lettura del corpo richiesta (se presente in richieste POST)
+  let rawBody = "";
+  try {
+    if (req.method === "POST") {
+      rawBody = await req.text();
+    }
+  } catch (err) {
+    console.warn("[CHECK-MARKET] Impossibile leggere body richiesta:", err);
+  }
+
   // --------------------------------------------------------------------------
-  // PROTEZIONE ENDPOINT CON CRON_SECRET
+  // PROTEZIONE ENDPOINT: VERIFICA QSTASH / CRON_SECRET
   // --------------------------------------------------------------------------
-  if (!isAuthorized(req)) {
+  const { isAuthorized, authType } = await authenticateRequest(req, rawBody);
+
+  if (!isAuthorized) {
     return NextResponse.json(
       {
         checked: false,
         alert: false,
         error:
-          "Accesso non autorizzato. Header di autorizzazione (CRON_SECRET) non valido o mancante.",
+          "Accesso non autorizzato. Firma Upstash QStash non valida o header CRON_SECRET mancante.",
       },
       { status: 401 }
     );
@@ -141,6 +183,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           checked: true,
           marketOpen: false,
           alert: false,
+          authType,
           reason: marketStatus.message,
           marketStatus: {
             isOpen: false,
@@ -413,6 +456,7 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
       {
         ...responsePayload,
         modelUsed,
+        authType,
       },
       { status: 200 }
     );
@@ -430,4 +474,12 @@ Valuta attentamente la configurazione. Se confermi l'opportunità, calcola i liv
       { status: 500 }
     );
   }
+}
+
+export async function GET(req: NextRequest): Promise<NextResponse> {
+  return handleCheckMarket(req);
+}
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
+  return handleCheckMarket(req);
 }
