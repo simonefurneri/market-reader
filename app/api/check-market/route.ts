@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getXAUUSD15mCandles } from "@/lib/marketData";
+import { fetchCandlesWithCache } from "@/lib/marketData";
 import { calculateTechnicalIndicators } from "@/lib/indicators";
 import { checkPotentialOpportunity } from "@/lib/opportunityFilter";
 import { analyzeMarket } from "@/lib/analyzeMarket";
@@ -23,6 +23,7 @@ export const dynamic = "force-dynamic";
 // ============================================================================
 // CONFIGURAZIONE PERSISTENZA E COOLDOWN ALERT
 // ============================================================================
+
 
 /**
  * Numero di controlli consecutivi con potenziale opportunità richiesti
@@ -167,8 +168,27 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
 
     // --------------------------------------------------------------------------
     // STEP 2: RECUPERO DATI LIVE E CALCOLO INDICATORI TECNICI
+    // (Usa cache Redis: per 15M con TTL 4 min risulterà cache miss ogni 5 min;
+    // per 1H con TTL 18 min userà la cache se presente)
     // --------------------------------------------------------------------------
-    const candles = await getXAUUSD15mCandles();
+    const candles = await fetchCandlesWithCache({
+      symbol: "XAU/USD",
+      timeframe: "15M",
+      outputsize: 100,
+      forceRefresh: false,
+    });
+
+    // Prelievo candele 1H da cache (se presenti) per allineamento cache
+    await fetchCandlesWithCache({
+      symbol: "XAU/USD",
+      timeframe: "1H",
+      outputsize: 100,
+      forceRefresh: false,
+    }).catch((err) => {
+      console.warn("[CHECK-MARKET] Warning prelievo candele 1H:", err);
+      return null;
+    });
+
     if (!candles || candles.length === 0) {
       await saveLastCheckLog({
         timestamp: Date.now(),

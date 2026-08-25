@@ -151,6 +151,18 @@ export interface CheckMarketApiResponse {
   aiAnalysis?: ExtendedMarketAnalysisResponse | null;
 }
 
+export interface StoredManualAnalysis {
+  id: string;
+  timestamp: number;
+  symbol: string;
+  currentPrice: number;
+  indicators: TechnicalIndicatorsSummary;
+  analysis: ExtendedMarketAnalysisResponse;
+  modelUsed?: string | null;
+  filterResult?: OpportunityFilterResult;
+}
+
+
 
 
 

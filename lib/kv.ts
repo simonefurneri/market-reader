@@ -1,10 +1,13 @@
 import { Redis } from "@upstash/redis";
+import { CandleData, StoredManualAnalysis } from "@/lib/types";
 
 // Chiavi di persistenza su Redis / Vercel KV
 export const KV_KEY_LAST_ALERT_TIMESTAMP = "market:lastAlertTimestamp";
 export const KV_KEY_CONSECUTIVE_SIGNAL_COUNT = "market:consecutiveSignalCount";
 export const KV_KEY_LAST_CHECK_LOG = "lastCheckLog";
 export const KV_KEY_CHECK_HISTORY = "checkHistory";
+export const KV_KEY_MANUAL_ANALYSIS_HISTORY = "analysis:history";
+
 
 export interface MarketCheckLog {
   timestamp: number;
@@ -35,6 +38,9 @@ const inMemoryState = {
 
 let inMemoryLastCheckLog: MarketCheckLog | null = null;
 let inMemoryCheckHistory: MarketCheckLog[] = [];
+let inMemoryManualHistory: StoredManualAnalysis[] = [];
+const inMemoryCandlesCache = new Map<string, { data: CandleData[]; expiresAt: number }>();
+
 
 /**
  * Inizializza il client Redis rilevando automaticamente sia le variabili
@@ -270,3 +276,188 @@ export async function getCheckHistory(
     return inMemoryCheckHistory.slice(0, limit);
   }
 }
+
+// ============================================================================
+// GESTIONE CACHE CANDELE (REDIS & FALLBACK MEMORIA)
+// ============================================================================
+
+/**
+ * Normalizza il simbolo (es. "XAU/USD" -> "XAUUSD").
+ */
+export function normalizeSymbol(symbol: string): string {
+  return symbol.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+}
+
+/**
+ * Normalizza il timeframe (es. "15min" -> "15M", "1h" -> "1H").
+ */
+export function normalizeTimeframe(timeframe: string): "15M" | "1H" | string {
+  const tf = timeframe.toUpperCase();
+  if (tf === "15MIN" || tf === "15M") return "15M";
+  if (tf === "1H" || tf === "60MIN" || tf === "60M") return "1H";
+  return tf;
+}
+
+/**
+ * Genera la chiave Redis per la cache candele nel formato: candles:{symbol}:{timeframe}
+ */
+export function getCandlesCacheKey(symbol: string, timeframe: string): string {
+  return `candles:${normalizeSymbol(symbol)}:${normalizeTimeframe(timeframe)}`;
+}
+
+/**
+ * Restituisce il TTL in secondi per il timeframe specificato:
+ * - 15M: 4 minuti (240 secondi)
+ * - 1H: 18 minuti (1080 secondi)
+ */
+export function getTimeframeTtlSeconds(timeframe: string): number {
+  const norm = normalizeTimeframe(timeframe);
+  if (norm === "15M") return 4 * 60; // 240 secondi = 4 minuti
+  if (norm === "1H") return 18 * 60; // 1080 secondi = 18 minuti
+  return 4 * 60;
+}
+
+/**
+ * Legge le candele dalla cache Redis (o fallback in-memory se Redis non è configurato).
+ * Restituisce null se la chiave non esiste o se il TTL è scaduto.
+ */
+export async function getCachedCandles(
+  symbol: string,
+  timeframe: string
+): Promise<CandleData[] | null> {
+  const key = getCandlesCacheKey(symbol, timeframe);
+  const redis = getRedisClient();
+
+  if (!redis) {
+    const cached = inMemoryCandlesCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+    inMemoryCandlesCache.delete(key);
+    return null;
+  }
+
+  try {
+    const data = await redis.get<CandleData[] | string>(key);
+    if (!data) return null;
+
+    if (typeof data === "string") {
+      try {
+        return JSON.parse(data) as CandleData[];
+      } catch {
+        return null;
+      }
+    }
+    return data as CandleData[];
+  } catch (error) {
+    console.warn(`[KV Storage] Errore lettura cache candele [${key}]:`, error);
+    const cached = inMemoryCandlesCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+    return null;
+  }
+}
+
+/**
+ * Salva le candele nella cache Redis con il relativo TTL in secondi.
+ */
+export async function setCachedCandles(
+  symbol: string,
+  timeframe: string,
+  candles: CandleData[],
+  ttlSeconds?: number
+): Promise<void> {
+  const ttl = ttlSeconds ?? getTimeframeTtlSeconds(timeframe);
+  const key = getCandlesCacheKey(symbol, timeframe);
+
+  inMemoryCandlesCache.set(key, {
+    data: candles,
+    expiresAt: Date.now() + ttl * 1000,
+  });
+
+  const redis = getRedisClient();
+  if (!redis) return;
+
+  try {
+    await redis.set(key, candles, { ex: ttl });
+  } catch (error) {
+    console.warn(`[KV Storage] Errore scrittura cache candele [${key}]:`, error);
+  }
+}
+
+// ============================================================================
+// GESTIONE STORICO ANALISI AI MANUALI (REDIS LPUSH + LTRIM MAX 10)
+// ============================================================================
+
+/**
+ * Salva un'analisi AI eseguita manualmente tramite pulsante nel pannello.
+ * Mantiene uno storico di massimo 10 elementi (LPUSH + LTRIM 0 9).
+ */
+export async function saveManualAnalysis(
+  analysisEntry: StoredManualAnalysis
+): Promise<void> {
+  const redis = getRedisClient();
+
+  // In-memory fallback
+  inMemoryManualHistory.unshift(analysisEntry);
+  if (inMemoryManualHistory.length > 10) {
+    inMemoryManualHistory = inMemoryManualHistory.slice(0, 10);
+  }
+
+  if (!redis) return;
+
+  try {
+    await redis.lpush(KV_KEY_MANUAL_ANALYSIS_HISTORY, analysisEntry);
+    await redis.ltrim(KV_KEY_MANUAL_ANALYSIS_HISTORY, 0, 9);
+  } catch (error) {
+    console.warn(
+      "[KV Storage] Errore salvataggio manual analysis in Redis:",
+      error
+    );
+  }
+}
+
+/**
+ * Recupera le ultime N analisi manuali salvate su Redis (massimo 10).
+ */
+export async function getManualAnalysisHistory(
+  limit: number = 10
+): Promise<StoredManualAnalysis[]> {
+  const maxLimit = Math.min(Math.max(limit, 1), 10);
+  const redis = getRedisClient();
+
+  if (!redis) {
+    return inMemoryManualHistory.slice(0, maxLimit);
+  }
+
+  try {
+    const rawList = await redis.lrange<StoredManualAnalysis | string>(
+      KV_KEY_MANUAL_ANALYSIS_HISTORY,
+      0,
+      maxLimit - 1
+    );
+
+    if (!rawList || rawList.length === 0) {
+      return inMemoryManualHistory.slice(0, maxLimit);
+    }
+
+    return rawList.map((item) => {
+      if (typeof item === "string") {
+        try {
+          return JSON.parse(item) as StoredManualAnalysis;
+        } catch {
+          return item as unknown as StoredManualAnalysis;
+        }
+      }
+      return item as StoredManualAnalysis;
+    });
+  } catch (error) {
+    console.warn(
+      "[KV Storage] Errore recupero manual analysis history da Redis:",
+      error
+    );
+    return inMemoryManualHistory.slice(0, maxLimit);
+  }
+}
+

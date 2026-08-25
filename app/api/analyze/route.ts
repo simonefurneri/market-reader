@@ -1,10 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeMarket } from "@/lib/analyzeMarket";
-import { TechnicalIndicatorsSummary } from "@/lib/types";
+import { fetchCandlesWithCache } from "@/lib/marketData";
+import { calculateTechnicalIndicators } from "@/lib/indicators";
 import { getMarketHoursStatus } from "@/lib/marketHours";
+import { saveManualAnalysis, getManualAnalysisHistory } from "@/lib/kv";
+import { StoredManualAnalysis } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * GET: Restituisce lo storico delle ultime 10 analisi manuali memorizzate su Redis.
+ */
+export async function GET() {
+  try {
+    const history = await getManualAnalysisHistory(10);
+    return NextResponse.json({ success: true, history });
+  } catch (error) {
+    console.error("Errore durante il recupero dello storico analisi:", error);
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Errore durante il recupero dello storico analisi.";
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
+  }
+}
+
+/**
+ * POST: Esegue una nuova analisi manuale:
+ * 1. Usa dati FRESCHI per timeframe 15M (bypass lettura cache, fetch Twelve Data, salvataggio su Redis).
+ * 2. Usa dati in CACHE per timeframe 1H se presenti (altrimenti fetch Twelve Data e salvataggio su Redis).
+ * 3. Calcola indicatori tecnici ed esegue l'analisi Gemini AI.
+ * 4. Salva il risultato su Redis nella lista dello storico (max 10 elementi, LPUSH + LTRIM).
+ */
 export async function POST(req: NextRequest) {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -19,41 +46,68 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const body = await req.json();
-    const indicators: Partial<TechnicalIndicatorsSummary> =
-      body.indicators || body;
+    // 1. Candele 15M fresche (forceRefresh = true: bypass cache e salvataggio in cache)
+    const candles15m = await fetchCandlesWithCache({
+      symbol: "XAU/USD",
+      timeframe: "15M",
+      outputsize: 100,
+      forceRefresh: true,
+    });
 
-    const currentPrice = indicators.currentPrice ?? body.currentPrice;
-
-    if (currentPrice === undefined || currentPrice === null) {
+    if (!candles15m || candles15m.length === 0) {
       return NextResponse.json(
         {
           success: false,
-          error: "Dati insufficienti: prezzo attuale (currentPrice) obbligatorio.",
+          error: "Dati candela 15M non disponibili da Twelve Data.",
         },
-        { status: 400 }
+        { status: 502 }
       );
     }
 
+    // 2. Candele 1H da cache se presenti, altrimenti fetch Twelve Data e salvataggio in cache
+    const candles1h = await fetchCandlesWithCache({
+      symbol: "XAU/USD",
+      timeframe: "1H",
+      outputsize: 100,
+      forceRefresh: false,
+    }).catch((err) => {
+      console.warn("[API /analyze] Warning recupero candele 1H:", err);
+      return null;
+    });
+
+    // 3. Calcolo indicatori tecnici sul timeframe 15M
+    const indicators = calculateTechnicalIndicators(candles15m);
     const marketStatus = getMarketHoursStatus();
 
-    // Chiamata con skipGeminiIfNoSignal: false
-    // Ottiene sempre la risposta da Gemini (con parametri operativi inclusi automaticamente se c'è segnale)
-    const result = await analyzeMarket(
-      indicators as TechnicalIndicatorsSummary,
-      {
-        skipGeminiIfNoSignal: false,
-        apiKey: apiKey.trim(),
-      }
-    );
+    // 4. Analisi di mercato con Gemini AI
+    const result = await analyzeMarket(indicators, {
+      skipGeminiIfNoSignal: false,
+      candles: candles15m,
+      apiKey: apiKey.trim(),
+    });
 
     if (!result) {
       throw new Error("Errore durante l'elaborazione dell'analisi di mercato.");
     }
 
+    // 5. Salvataggio su Redis nella lista storico manuale (max 10 elementi)
+    const entry: StoredManualAnalysis = {
+      id: `analysis_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      timestamp: Date.now(),
+      symbol: "XAUUSD",
+      currentPrice: indicators.currentPrice,
+      indicators,
+      analysis: result,
+      modelUsed: result.modelUsed || null,
+      filterResult: result.filterResult,
+    };
+
+    await saveManualAnalysis(entry);
+
     return NextResponse.json({
       success: true,
       data: result,
+      entry,
       modelUsed: result.modelUsed,
       filterResult: result.filterResult,
       marketStatus: {
@@ -78,3 +132,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

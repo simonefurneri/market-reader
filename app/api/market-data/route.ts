@@ -1,11 +1,24 @@
-import { NextResponse } from "next/server";
-import { getXAUUSD15mCandles } from "@/lib/marketData";
+import { NextRequest, NextResponse } from "next/server";
+import { fetchCandlesWithCache } from "@/lib/marketData";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const data = await getXAUUSD15mCandles();
+    const { searchParams } = new URL(req.url);
+    const symbol = searchParams.get("symbol") || "XAU/USD";
+    const timeframe = searchParams.get("timeframe") || "15M";
+    const forceRefresh =
+      searchParams.get("forceRefresh") === "true" ||
+      searchParams.get("force") === "true";
+
+    const data = await fetchCandlesWithCache({
+      symbol,
+      timeframe,
+      outputsize: 100,
+      forceRefresh,
+    });
+
     return NextResponse.json({ success: true, data });
   } catch (error) {
     const message =
@@ -14,3 +27,4 @@ export async function GET() {
     return NextResponse.json({ success: false, error: message }, { status });
   }
 }
+

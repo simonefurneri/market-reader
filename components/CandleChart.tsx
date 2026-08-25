@@ -47,58 +47,67 @@ export function CandleChart({
     pct: number;
   } | null>(null);
 
-  const loadData = useCallback(async (isPolling = false) => {
-    try {
-      if (isPolling) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
-      setError(null);
-
-      const rawCandles = await fetchMarketData();
-
-      if (rawCandles.length > 0) {
-        const last = rawCandles[rawCandles.length - 1];
-        const first = rawCandles[0];
-        setCurrentCandle(last);
-
-        const diff = last.close - first.open;
-        const pct = (diff / first.open) * 100;
-        setPriceChange({ diff, pct });
-
-        // Converte nel tipo CandlestickData con UTCTimestamp per lightweight-charts
-        const chartData: CandlestickData<UTCTimestamp>[] = rawCandles.map((c) => ({
-          time: c.time as UTCTimestamp,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-        }));
-
-        if (seriesRef.current) {
-          seriesRef.current.setData(chartData);
+  const loadData = useCallback(
+    async (isPolling = false, forceRefresh = false) => {
+      try {
+        if (isPolling) {
+          setRefreshing(true);
+        } else {
+          setLoading(true);
         }
-      }
+        setError(null);
 
-      setLastUpdated(new Date());
-      setCountdown(autoRefreshIntervalSeconds);
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Si è verificato un errore durante il recupero delle candele";
-      setError(message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [autoRefreshIntervalSeconds]);
+        const rawCandles = await fetchMarketData({
+          symbol: symbolName,
+          timeframe: intervalName,
+          forceRefresh,
+        });
+
+        if (rawCandles.length > 0) {
+          const last = rawCandles[rawCandles.length - 1];
+          const first = rawCandles[0];
+          setCurrentCandle(last);
+
+          const diff = last.close - first.open;
+          const pct = (diff / first.open) * 100;
+          setPriceChange({ diff, pct });
+
+          // Converte nel tipo CandlestickData con UTCTimestamp per lightweight-charts
+          const chartData: CandlestickData<UTCTimestamp>[] = rawCandles.map((c) => ({
+            time: c.time as UTCTimestamp,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+          }));
+
+          if (seriesRef.current) {
+            seriesRef.current.setData(chartData);
+          }
+        }
+
+        setLastUpdated(new Date());
+        setCountdown(autoRefreshIntervalSeconds);
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : "Si è verificato un errore durante il recupero delle candele";
+        setError(message);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [autoRefreshIntervalSeconds, symbolName, intervalName]
+  );
 
   const handleManualRefresh = useCallback(() => {
     setCountdown(autoRefreshIntervalSeconds);
-    loadData(true);
+    // Click manuale: bypass della cache (forceRefresh = true)
+    loadData(true, true);
   }, [autoRefreshIntervalSeconds, loadData]);
+
 
   // Inizializzazione grafico Lightweight Charts con tema scuro e responsive
   useEffect(() => {

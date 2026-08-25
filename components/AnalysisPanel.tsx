@@ -10,63 +10,79 @@ import {
   Eye,
   Layers,
   Clock,
-  RefreshCw,
   AlertTriangle,
   ShieldAlert,
   Moon,
   Target,
+  History,
+  ArrowLeft,
+  ChevronRight,
+  Loader2,
 } from "lucide-react";
-import { fetchMarketData } from "@/lib/marketData";
-import { calculateTechnicalIndicators } from "@/lib/indicators";
 import {
   ExtendedMarketAnalysisResponse,
   TechnicalIndicatorsSummary,
+  StoredManualAnalysis,
 } from "@/lib/types";
 
-export interface AnalysisPanelProps {
-  autoRefreshIntervalSeconds?: number;
-}
-
-export function AnalysisPanel({
-  autoRefreshIntervalSeconds = 90, // Aggiornamento ogni 90 secondi per ottimizzare le chiamate AI
-}: AnalysisPanelProps) {
+export function AnalysisPanel() {
+  const [activeTab, setActiveTab] = useState<"analysis" | "history">("analysis");
   const [analysis, setAnalysis] =
     useState<ExtendedMarketAnalysisResponse | null>(null);
   const [indicators, setIndicators] =
     useState<TechnicalIndicatorsSummary | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [modelUsed, setModelUsed] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState<number>(autoRefreshIntervalSeconds);
+  const [analysisTimestamp, setAnalysisTimestamp] = useState<number | null>(null);
 
-  const runAnalysis = useCallback(async (isPolling = false) => {
+  const [history, setHistory] = useState<StoredManualAnalysis[]>([]);
+  const [selectedHistoryItem, setSelectedHistoryItem] =
+    useState<StoredManualAnalysis | null>(null);
+
+  const [loading, setLoading] = useState<boolean>(false);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Carica lo storico delle analisi da Redis al mounting
+  const loadHistory = useCallback(async () => {
     try {
-      if (isPolling) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
+      setHistoryLoading(true);
+      const res = await fetch("/api/analyze", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok && json.success && Array.isArray(json.history)) {
+        setHistory(json.history);
+        // Se non c'è ancora un'analisi corrente caricata e c'è almeno un elemento nello storico,
+        // visualizza l'ultima analisi effettuata
+        if (json.history.length > 0) {
+          setAnalysis((prev) => prev || json.history[0].analysis);
+          setIndicators((prev) => prev || json.history[0].indicators);
+          setModelUsed((prev) => prev || json.history[0].modelUsed || null);
+          setAnalysisTimestamp((prev) => prev || json.history[0].timestamp);
+        }
       }
+    } catch (err) {
+      console.warn("Impossibile caricare lo storico analisi:", err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  // Esecuzione manuale dell'analisi AI tramite pulsante "Analizza ora"
+  const handleRunAnalysis = async () => {
+    try {
+      setLoading(true);
       setError(null);
+      setActiveTab("analysis");
+      setSelectedHistoryItem(null);
 
-      // 1. Recupero dati candele live
-      const candles = await fetchMarketData();
-      if (!candles || candles.length === 0) {
-        throw new Error("Nessun dato di mercato disponibile per l'analisi.");
-      }
-
-      // 2. Calcolo indicatori tecnici
-      const calculatedIndicators = calculateTechnicalIndicators(candles);
-      setIndicators(calculatedIndicators);
-
-      // 3. Chiamata alla route /api/analyze (con analyzeMarket unificato)
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ indicators: calculatedIndicators }),
       });
 
       const result = await response.json();
@@ -75,12 +91,19 @@ export function AnalysisPanel({
         throw new Error(result.error || `Errore HTTP ${response.status}`);
       }
 
-      setAnalysis(result.data as ExtendedMarketAnalysisResponse);
-      if (result.modelUsed) {
-        setModelUsed(result.modelUsed);
+      const newAnalysis = result.data as ExtendedMarketAnalysisResponse;
+      setAnalysis(newAnalysis);
+      setModelUsed(result.modelUsed || null);
+
+      if (result.entry) {
+        const entry = result.entry as StoredManualAnalysis;
+        setIndicators(entry.indicators);
+        setAnalysisTimestamp(entry.timestamp);
+        // Aggiorna lo storico locale mantenendo max 10 elementi
+        setHistory((prev) => [entry, ...prev.filter((i) => i.id !== entry.id)].slice(0, 10));
+      } else {
+        setAnalysisTimestamp(Date.now());
       }
-      setLastUpdated(new Date());
-      setCountdown(autoRefreshIntervalSeconds);
     } catch (err) {
       const message =
         err instanceof Error
@@ -89,53 +112,27 @@ export function AnalysisPanel({
       setError(message);
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
-  }, [autoRefreshIntervalSeconds]);
-
-  const handleManualRefresh = useCallback(() => {
-    setCountdown(autoRefreshIntervalSeconds);
-    runAnalysis(false);
-  }, [autoRefreshIntervalSeconds, runAnalysis]);
-
-  // Fetch iniziale
-  useEffect(() => {
-    runAnalysis(false);
-  }, [runAnalysis]);
-
-  // Timer per countdown decrescente secondo per secondo e auto-refresh a zero
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          runAnalysis(true);
-          return autoRefreshIntervalSeconds;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [runAnalysis, autoRefreshIntervalSeconds]);
+  };
 
   // Helper per badge Trend
   const renderTrendBadge = (trend?: "rialzista" | "ribassista" | "laterale") => {
     if (trend === "rialzista") {
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
           <TrendingUp className="w-3.5 h-3.5" /> Rialzista
         </span>
       );
     }
     if (trend === "ribassista") {
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-400 border border-red-500/30">
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/15 text-red-400 border border-red-500/30">
           <TrendingDown className="w-3.5 h-3.5" /> Ribassista
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
         <Activity className="w-3.5 h-3.5" /> Laterale
       </span>
     );
@@ -174,258 +171,441 @@ export function AnalysisPanel({
     );
   };
 
-  return (
-    <aside className="w-full lg:w-96 flex flex-col justify-between bg-slate-900/50 rounded-xl border border-slate-800 p-4 sm:p-5 relative overflow-hidden backdrop-blur">
-      {/* Intestazione Pannello */}
-      <div>
-        <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-800">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
-              <Sparkles className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                Analisi AI
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono">
-                  {modelUsed ? modelUsed.replace("gemini-", "") : "Gemini"}
-                </span>
-              </h2>
-              <p className="text-xs text-slate-400">Lettura assistita del mercato</p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleManualRefresh}
-            disabled={loading || refreshing}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors disabled:opacity-50 text-xs font-mono"
-            title="Ricalcola analisi ora"
-          >
-            <RefreshCw
-              className={`w-3.5 h-3.5 ${
-                refreshing ? "animate-spin text-purple-400" : ""
-              }`}
-            />
-            <span className="text-[11px] text-slate-300 font-medium">
-              {refreshing ? "Analisi..." : `Aggiorna (${countdown}s)`}
-            </span>
-          </button>
-        </div>
-
+  // Helper di rendering del corpo di un'analisi (utilizzato sia per l'analisi corrente che per i dettagli dello storico)
+  const renderAnalysisBody = (
+    data: ExtendedMarketAnalysisResponse,
+    indicatorsData?: TechnicalIndicatorsSummary | null,
+    model?: string | null,
+    timestamp?: number | null
+  ) => {
+    return (
+      <div className="space-y-3.5">
         {/* Banner Giallo se Mercato Chiuso / Weekend */}
-        {analysis?.mercato_chiuso && (
-          <div className="mb-3.5 p-3 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-start gap-2.5">
+        {data.mercato_chiuso && (
+          <div className="p-3 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-start gap-2.5">
             <Moon className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <p className="text-xs text-amber-200 font-medium leading-relaxed">
-              Mercato chiuso o a bassa liquidità — l&apos;analisi qui sotto è meno affidabile.
+              Mercato chiuso o a bassa liquidità — l&apos;analisi potrebbe essere meno affidabile.
             </p>
           </div>
         )}
 
-        {/* Loading Skeleton State */}
-        {loading && (
-          <div className="space-y-4 animate-pulse">
-            <div className="p-3.5 rounded-lg bg-slate-800/30 border border-slate-800 space-y-3">
-              <div className="flex justify-between items-center">
-                <div className="h-4 bg-slate-800 rounded w-24"></div>
-                <div className="h-6 bg-slate-800 rounded-full w-20"></div>
+        {/* Scheda Trend & Volatilità */}
+        <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-[11px] text-slate-400 font-medium block mb-1">
+                Trend Identificato
+              </span>
+              {renderTrendBadge(data.trend)}
+            </div>
+
+            <div className="text-right">
+              <span className="text-[11px] text-slate-400 font-medium block mb-1">
+                Forza Trend
+              </span>
+              <span className="text-xs font-semibold capitalize text-slate-200 bg-slate-700/50 px-2.5 py-1 rounded-md border border-slate-600/50">
+                {data.forza_trend}
+              </span>
+            </div>
+          </div>
+
+          <div className="pt-2.5 border-t border-slate-700/40 flex items-center justify-between">
+            <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-amber-400" /> Volatilità (ATR)
+            </span>
+            {renderVolatilityGauge(data.volatilita)}
+          </div>
+        </div>
+
+        {/* Livelli Chiave */}
+        {data.livelli_chiave && data.livelli_chiave.length > 0 && (
+          <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
+              <Layers className="w-3.5 h-3.5 text-blue-400" />
+              <span>Livelli Chiave di Prezzo</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {data.livelli_chiave.map((livello, idx) => (
+                <span
+                  key={idx}
+                  className="text-xs px-2.5 py-1 rounded bg-slate-900/80 text-blue-300 border border-slate-700 font-mono font-medium"
+                >
+                  {livello}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Parametri Operativi Indicativi (se presenti) */}
+        {data.parametri_operativi &&
+          (data.parametri_operativi.entry_price ||
+            data.parametri_operativi.stop_loss ||
+            data.parametri_operativi.take_profit) && (
+            <div className="p-3.5 rounded-lg bg-gradient-to-br from-blue-950/40 via-slate-850 to-purple-950/30 border border-blue-500/30 shadow-sm space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-blue-300">
+                  <Target className="w-4 h-4 text-blue-400" />
+                  <span>Parametri Operativi Indicativi</span>
+                </div>
+                {data.parametri_operativi.tipo_operazione &&
+                  data.parametri_operativi.tipo_operazione !== "nessuna" && (
+                    <span
+                      className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
+                        data.parametri_operativi.tipo_operazione === "long"
+                          ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                          : "bg-red-500/20 text-red-300 border-red-500/40"
+                      }`}
+                    >
+                      {data.parametri_operativi.tipo_operazione}
+                    </span>
+                  )}
               </div>
-              <div className="h-4 bg-slate-800 rounded w-32"></div>
+
+              {/* Griglia Valori: Entry, Stop Loss, Take Profit */}
+              <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                <div className="p-2 rounded bg-slate-900/80 border border-slate-700/60">
+                  <div className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                    Entry
+                  </div>
+                  <div className="text-xs font-bold text-white font-mono mt-0.5 truncate">
+                    {data.parametri_operativi.entry_price || "--"}
+                  </div>
+                </div>
+
+                <div className="p-2 rounded bg-slate-900/80 border border-red-500/30">
+                  <div className="text-[10px] font-medium text-red-400 uppercase tracking-wider">
+                    Stop Loss
+                  </div>
+                  <div className="text-xs font-bold text-red-300 font-mono mt-0.5 truncate">
+                    {data.parametri_operativi.stop_loss || "--"}
+                  </div>
+                </div>
+
+                <div className="p-2 rounded bg-slate-900/80 border border-emerald-500/30">
+                  <div className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
+                    Take Profit
+                  </div>
+                  <div className="text-xs font-bold text-emerald-300 font-mono mt-0.5 truncate">
+                    {data.parametri_operativi.take_profit || "--"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Disclaimer Rischio Specifico */}
+              {data.parametri_operativi.rischio && (
+                <p className="text-[10px] text-slate-400 italic leading-relaxed pt-1 border-t border-slate-700/40">
+                  ⚠️ {data.parametri_operativi.rischio}
+                </p>
+              )}
             </div>
-            <div className="p-3.5 rounded-lg bg-slate-800/30 border border-slate-800 space-y-2">
-              <div className="h-4 bg-slate-800 rounded w-28"></div>
-              <div className="h-3 bg-slate-800 rounded w-full"></div>
-              <div className="h-3 bg-slate-800 rounded w-4/5"></div>
-            </div>
-            <div className="p-3.5 rounded-lg bg-slate-800/30 border border-slate-800 space-y-2">
-              <div className="h-4 bg-slate-800 rounded w-28"></div>
-              <div className="h-3 bg-slate-800 rounded w-full"></div>
-            </div>
-            <p className="text-[11px] text-center text-slate-500 py-1">
-              Calcolo indicatori & interrogazione modello Gemini...
-            </p>
+          )}
+
+        {/* Scenario Probabile */}
+        <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+            <span>Scenario Probabile</span>
+          </div>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            {data.scenario_probabile}
+          </p>
+        </div>
+
+        {/* Cosa Osservare */}
+        <div className="p-3.5 rounded-lg bg-purple-950/20 border border-purple-500/20">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-300 mb-1.5">
+            <Eye className="w-3.5 h-3.5 text-purple-400" />
+            <span>Cosa Monitorare</span>
+          </div>
+          <p className="text-xs text-purple-200/90 leading-relaxed">
+            {data.cosa_osservare}
+          </p>
+        </div>
+
+        {/* Indicatori Tecnici Quick Glance */}
+        {indicatorsData && (
+          <div className="px-3 py-2 rounded-lg bg-slate-950/40 border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between font-mono">
+            <span>RSI: {indicatorsData.rsi14 ?? "--"}</span>
+            <span>EMA20: ${indicatorsData.ema20 ?? "--"}</span>
+            <span>EMA50: ${indicatorsData.ema50 ?? "--"}</span>
           </div>
         )}
 
-        {/* Error State */}
-        {!loading && error && (
-          <div className="p-4 rounded-lg bg-red-950/20 border border-red-500/20 mb-4 text-center">
-            <AlertTriangle className="w-5 h-5 text-red-400 mx-auto mb-2" />
-            <h4 className="text-xs font-semibold text-red-300 mb-1">
-              Analisi non disponibile
-            </h4>
-            <p className="text-[11px] text-red-400/90 mb-3 leading-relaxed">
-              {error}
-            </p>
+        {/* Meta Footer con Timestamp & Modello */}
+        <div className="flex items-center justify-between text-[10px] text-slate-500 px-1 font-mono pt-1">
+          {timestamp && (
+            <span className="flex items-center gap-1 text-slate-400">
+              <Clock className="w-3 h-3 text-slate-500" />
+              {new Date(timestamp).toLocaleDateString("it-IT", {
+                day: "2-digit",
+                month: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })}
+            </span>
+          )}
+          {model && (
+            <span className="px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
+              {model.replace("gemini-", "")}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <aside className="w-full lg:w-96 flex flex-col justify-between bg-slate-900/50 rounded-xl border border-slate-800 p-4 sm:p-5 relative overflow-hidden backdrop-blur">
+      <div>
+        {/* Intestazione Pannello con Tab Switcher */}
+        <div className="pb-3 mb-3 border-b border-slate-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <h2 className="text-sm font-bold text-white tracking-tight">
+                Analisi AI
+              </h2>
+            </div>
+
+            {/* Pulsante Principale "Analizza ora" */}
             <button
               type="button"
-              onClick={() => runAnalysis(false)}
-              className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700 transition-colors"
+              onClick={handleRunAnalysis}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white border border-purple-400/30 transition-all disabled:opacity-50 text-xs font-semibold shadow-sm hover:shadow-purple-500/20 active:scale-95 cursor-pointer"
+              title="Avvia una nuova analisi con dati 15M freschi"
             >
-              Riprova
+              {loading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" />
+              )}
+              <span>{loading ? "Analisi..." : "Analizza ora"}</span>
             </button>
+          </div>
+
+          {/* Navigazione tra le due Tab: "Analisi AI" e "Storico (10)" */}
+          <div className="flex items-center rounded-lg bg-slate-950/80 p-1 border border-slate-800">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("analysis");
+                setSelectedHistoryItem(null);
+              }}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                activeTab === "analysis"
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              Analisi AI
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("history")}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                activeTab === "history"
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <History className="w-3.5 h-3.5 text-blue-400" />
+              Storico
+              {history.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.2 rounded-full bg-slate-700 text-[10px] font-mono text-slate-300">
+                  {history.length}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* TAB 1: ANALISI AI CORRENTE */}
+        {activeTab === "analysis" && (
+          <div>
+            {/* Loading Skeleton */}
+            {loading && (
+              <div className="space-y-4 animate-pulse pt-2">
+                <div className="p-3.5 rounded-lg bg-slate-800/30 border border-slate-800 space-y-3">
+                  <div className="flex justify-between items-center">
+                    <div className="h-4 bg-slate-800 rounded w-24"></div>
+                    <div className="h-6 bg-slate-800 rounded-full w-20"></div>
+                  </div>
+                  <div className="h-4 bg-slate-800 rounded w-32"></div>
+                </div>
+                <div className="p-3.5 rounded-lg bg-slate-800/30 border border-slate-800 space-y-2">
+                  <div className="h-4 bg-slate-800 rounded w-28"></div>
+                  <div className="h-3 bg-slate-800 rounded w-full"></div>
+                  <div className="h-3 bg-slate-800 rounded w-4/5"></div>
+                </div>
+                <p className="text-[11px] text-center text-slate-500 py-1">
+                  Recupero dati freschi 15M & interrogazione modello Gemini...
+                </p>
+              </div>
+            )}
+
+            {/* Error State */}
+            {!loading && error && (
+              <div className="p-4 rounded-lg bg-red-950/20 border border-red-500/20 mb-4 text-center">
+                <AlertTriangle className="w-5 h-5 text-red-400 mx-auto mb-2" />
+                <h4 className="text-xs font-semibold text-red-300 mb-1">
+                  Analisi non riuscita
+                </h4>
+                <p className="text-[11px] text-red-400/90 mb-3 leading-relaxed">
+                  {error}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleRunAnalysis}
+                  className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700 transition-colors"
+                >
+                  Riprova
+                </button>
+              </div>
+            )}
+
+            {/* Visualizzazione Analisi Attiva */}
+            {!loading && !error && analysis && (
+              renderAnalysisBody(analysis, indicators, modelUsed, analysisTimestamp)
+            )}
+
+            {/* Placeholder Iniziale (nessuna analisi ancora eseguita) */}
+            {!loading && !error && !analysis && (
+              <div className="p-6 rounded-lg bg-slate-800/20 border border-dashed border-slate-800 text-center space-y-3 my-4">
+                <div className="p-3 rounded-full bg-purple-500/10 text-purple-400 w-fit mx-auto border border-purple-500/20">
+                  <Sparkles className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-semibold text-white">
+                    Nessuna analisi attiva
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    Clicca su &quot;Analizza ora&quot; per interrogare il mercato XAUUSD con dati freschi a 15M e generare lo scenario AI.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRunAnalysis}
+                  className="px-3.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold transition-colors"
+                >
+                  Analizza ora
+                </button>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Risultato Analisi */}
-        {!loading && analysis && (
-          <div className="space-y-3.5">
-            {/* Scheda Trend & Volatilità */}
-            <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-[11px] text-slate-400 font-medium block mb-1">
-                    Trend Identificato
-                  </span>
-                  {renderTrendBadge(analysis.trend)}
-                </div>
-
-                <div className="text-right">
-                  <span className="text-[11px] text-slate-400 font-medium block mb-1">
-                    Forza Trend
-                  </span>
-                  <span className="text-xs font-semibold capitalize text-slate-200 bg-slate-700/50 px-2.5 py-1 rounded-md border border-slate-600/50">
-                    {analysis.forza_trend}
+        {/* TAB 2: STORICO ANALISI (MAX 10) */}
+        {activeTab === "history" && (
+          <div>
+            {/* Sotto-vista: Dettagli dell'analisi storica selezionata */}
+            {selectedHistoryItem ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedHistoryItem(null)}
+                    className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 font-medium transition-colors cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Torna alla lista</span>
+                  </button>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono">
+                    Storico
                   </span>
                 </div>
-              </div>
 
-              <div className="pt-2.5 border-t border-slate-700/40 flex items-center justify-between">
-                <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
-                  <Zap className="w-3.5 h-3.5 text-amber-400" /> Volatilità (ATR)
-                </span>
-                {renderVolatilityGauge(analysis.volatilita)}
+                {renderAnalysisBody(
+                  selectedHistoryItem.analysis,
+                  selectedHistoryItem.indicators,
+                  selectedHistoryItem.modelUsed,
+                  selectedHistoryItem.timestamp
+                )}
               </div>
-            </div>
-
-            {/* Livelli Chiave */}
-            {analysis.livelli_chiave && analysis.livelli_chiave.length > 0 && (
-              <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
-                  <Layers className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Livelli Chiave di Prezzo</span>
+            ) : (
+              /* Sotto-vista: Lista delle ultime 10 analisi */
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-xs text-slate-400 pb-1">
+                  <span>Ultime 10 analisi manuali</span>
+                  <span className="font-mono text-[11px] text-slate-500">
+                    {history.length}/10
+                  </span>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {analysis.livelli_chiave.map((livello, idx) => (
-                    <span
-                      key={idx}
-                      className="text-xs px-2.5 py-1 rounded bg-slate-900/80 text-blue-300 border border-slate-700 font-mono font-medium"
-                    >
-                      {livello}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
 
-            {/* Sezione Evidenziata: Parametri Operativi Indicativi (visibile se presenti) */}
-            {analysis.parametri_operativi &&
-              (analysis.parametri_operativi.entry_price ||
-                analysis.parametri_operativi.stop_loss ||
-                analysis.parametri_operativi.take_profit) && (
-                <div className="p-3.5 rounded-lg bg-gradient-to-br from-blue-950/40 via-slate-850 to-purple-950/30 border border-blue-500/30 shadow-sm space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-blue-300">
-                      <Target className="w-4 h-4 text-blue-400" />
-                      <span>Parametri Operativi Indicativi</span>
-                    </div>
-                    {analysis.parametri_operativi.tipo_operazione &&
-                      analysis.parametri_operativi.tipo_operazione !==
-                        "nessuna" && (
-                        <span
-                          className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
-                            analysis.parametri_operativi.tipo_operazione ===
-                            "long"
-                              ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
-                              : "bg-red-500/20 text-red-300 border-red-500/40"
-                          }`}
-                        >
-                          {analysis.parametri_operativi.tipo_operazione}
-                        </span>
-                      )}
-                  </div>
-
-                  {/* Griglia Valori: Entry, Stop Loss, Take Profit */}
-                  <div className="grid grid-cols-3 gap-2 pt-1 text-center">
-                    <div className="p-2 rounded bg-slate-900/80 border border-slate-700/60">
-                      <div className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                        Entry
-                      </div>
-                      <div className="text-xs font-bold text-white font-mono mt-0.5 truncate">
-                        {analysis.parametri_operativi.entry_price || "--"}
-                      </div>
-                    </div>
-
-                    <div className="p-2 rounded bg-slate-900/80 border border-red-500/30">
-                      <div className="text-[10px] font-medium text-red-400 uppercase tracking-wider">
-                        Stop Loss
-                      </div>
-                      <div className="text-xs font-bold text-red-300 font-mono mt-0.5 truncate">
-                        {analysis.parametri_operativi.stop_loss || "--"}
-                      </div>
-                    </div>
-
-                    <div className="p-2 rounded bg-slate-900/80 border border-emerald-500/30">
-                      <div className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
-                        Take Profit
-                      </div>
-                      <div className="text-xs font-bold text-emerald-300 font-mono mt-0.5 truncate">
-                        {analysis.parametri_operativi.take_profit || "--"}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Disclaimer Rischio Specifico */}
-                  {analysis.parametri_operativi.rischio && (
-                    <p className="text-[10px] text-slate-400 italic leading-relaxed pt-1 border-t border-slate-700/40">
-                      ⚠️ {analysis.parametri_operativi.rischio}
+                {history.length === 0 ? (
+                  <div className="p-6 rounded-lg bg-slate-800/20 border border-dashed border-slate-800 text-center space-y-2 my-2">
+                    <History className="w-5 h-5 text-slate-500 mx-auto" />
+                    <p className="text-xs text-slate-400">
+                      Nessuna analisi salvata nello storico.
                     </p>
-                  )}
-                </div>
-              )}
+                    <p className="text-[11px] text-slate-500">
+                      Esegui la tua prima analisi cliccando sul pulsante &quot;Analizza ora&quot;.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+                    {history.map((item) => {
+                      const itemDate = new Date(item.timestamp);
+                      const formattedTime = itemDate.toLocaleTimeString("it-IT", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      });
+                      const formattedDate = itemDate.toLocaleDateString("it-IT", {
+                        day: "2-digit",
+                        month: "2-digit",
+                      });
 
-            {/* Scenario Probabile */}
-            <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                <span>Scenario Probabile</span>
-              </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                {analysis.scenario_probabile}
-              </p>
-            </div>
+                      const opType =
+                        item.analysis.parametri_operativi?.tipo_operazione;
 
-            {/* Cosa Osservare */}
-            <div className="p-3.5 rounded-lg bg-purple-950/20 border border-purple-500/20">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-300 mb-1.5">
-                <Eye className="w-3.5 h-3.5 text-purple-400" />
-                <span>Cosa Monitorare</span>
-              </div>
-              <p className="text-xs text-purple-200/90 leading-relaxed">
-                {analysis.cosa_osservare}
-              </p>
-            </div>
+                      return (
+                        <div
+                          key={item.id}
+                          onClick={() => setSelectedHistoryItem(item)}
+                          className="p-3 rounded-lg bg-slate-800/40 hover:bg-slate-800/80 border border-slate-700/50 hover:border-purple-500/40 transition-all cursor-pointer group flex items-center justify-between gap-3"
+                        >
+                          <div className="space-y-1.5 flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-white font-mono">
+                                ${item.currentPrice ? item.currentPrice.toFixed(2) : "--"}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {formattedDate} {formattedTime}
+                              </span>
+                            </div>
 
-            {/* Indicatori Tecnici Quick Glance */}
-            {indicators && (
-              <div className="px-3 py-2 rounded-lg bg-slate-950/40 border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between font-mono">
-                <span>RSI: {indicators.rsi14 ?? "--"}</span>
-                <span>EMA20: ${indicators.ema20 ?? "--"}</span>
-                <span>EMA50: ${indicators.ema50 ?? "--"}</span>
-              </div>
-            )}
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {renderTrendBadge(item.analysis.trend)}
+                              {opType && opType !== "nessuna" && (
+                                <span
+                                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase ${
+                                    opType === "long"
+                                      ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                                      : "bg-red-500/20 text-red-300 border-red-500/30"
+                                  }`}
+                                >
+                                  {opType}
+                                </span>
+                              )}
+                            </div>
 
-            {/* Ultimo aggiornamento con Countdown dinamico */}
-            {lastUpdated && (
-              <div className="flex items-center justify-between text-[10px] text-slate-500 px-1 font-mono">
-                <span className="flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {lastUpdated.toLocaleTimeString("it-IT", { hour12: false })}
-                </span>
-                <span className="text-slate-400">
-                  Auto-refresh in:{" "}
-                  <span className="text-purple-400 font-semibold">{countdown}s</span>
-                </span>
+                            <p className="text-[11px] text-slate-400 line-clamp-1 group-hover:text-slate-300 transition-colors">
+                              {item.analysis.scenario_probabile}
+                            </p>
+                          </div>
+
+                          <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-purple-400 shrink-0 transition-colors" />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -444,3 +624,4 @@ export function AnalysisPanel({
     </aside>
   );
 }
+
