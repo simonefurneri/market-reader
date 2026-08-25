@@ -55,6 +55,7 @@ export interface MarketAnalysisResponse {
   trend: "rialzista" | "ribassista" | "laterale";
   forza_trend: "debole" | "moderata" | "forte";
   volatilita: "bassa" | "media" | "alta";
+  conferma_trend?: "concorde" | "discorde" | "neutrale" | string;
   livelli_chiave: string[];
   scenario_probabile: string;
   cosa_osservare: string;

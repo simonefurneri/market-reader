@@ -46,9 +46,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Candele 15M fresche (forceRefresh = true: bypass cache e salvataggio in cache)
+    // Estrazione eventuale simbolo dalla richiesta (default: "XAU/USD")
+    let symbol = "XAU/USD";
+    try {
+      const body = await req.json();
+      if (body && typeof body.symbol === "string" && body.symbol.trim() !== "") {
+        symbol = body.symbol.trim();
+      }
+    } catch {
+      // Body vuoto o non JSON: usa default
+    }
+
+    // 1. Candele 15M fresche (forceRefresh = true: bypass cache TwelveData e salvataggio su Redis)
     const candles15m = await fetchCandlesWithCache({
-      symbol: "XAU/USD",
+      symbol,
       timeframe: "15M",
       outputsize: 100,
       forceRefresh: true,
@@ -58,31 +69,39 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error: "Dati candela 15M non disponibili da Twelve Data.",
+          error: `Dati candela 15M non disponibili da Twelve Data per ${symbol}.`,
         },
         { status: 502 }
       );
     }
 
-    // 2. Candele 1H da cache se presenti, altrimenti fetch Twelve Data e salvataggio in cache
+    // 2. Candele 1H di conferma (forceRefresh = false: legge dalla cache se presenti, altrimenti fetch e cache)
     const candles1h = await fetchCandlesWithCache({
-      symbol: "XAU/USD",
+      symbol,
       timeframe: "1H",
       outputsize: 100,
       forceRefresh: false,
     }).catch((err) => {
-      console.warn("[API /analyze] Warning recupero candele 1H:", err);
+      console.warn(`[API /analyze] Warning recupero candele 1H per ${symbol}:`, err);
       return null;
     });
 
-    // 3. Calcolo indicatori tecnici sul timeframe 15M
-    const indicators = calculateTechnicalIndicators(candles15m);
+    // 3. Calcolo indicatori tecnici sul timeframe primario (15M) e timeframe di conferma (1H)
+    const indicators15m = calculateTechnicalIndicators(candles15m, symbol, "15m");
+    const indicators1h =
+      candles1h && candles1h.length >= 20
+        ? calculateTechnicalIndicators(candles1h, symbol, "1h")
+        : undefined;
+
     const marketStatus = getMarketHoursStatus();
 
-    // 4. Analisi di mercato con Gemini AI
-    const result = await analyzeMarket(indicators, {
+    // 4. Analisi di mercato con Gemini AI (MTF 15M + 1H)
+    const result = await analyzeMarket(indicators15m, {
+      symbol,
       skipGeminiIfNoSignal: false,
       candles: candles15m,
+      candles1h: candles1h || undefined,
+      indicators1h,
       apiKey: apiKey.trim(),
     });
 
@@ -94,9 +113,9 @@ export async function POST(req: NextRequest) {
     const entry: StoredManualAnalysis = {
       id: `analysis_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       timestamp: Date.now(),
-      symbol: "XAUUSD",
-      currentPrice: indicators.currentPrice,
-      indicators,
+      symbol,
+      currentPrice: indicators15m.currentPrice,
+      indicators: indicators15m,
       analysis: result,
       modelUsed: result.modelUsed || null,
       filterResult: result.filterResult,
@@ -106,6 +125,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      symbol,
       data: result,
       entry,
       modelUsed: result.modelUsed,

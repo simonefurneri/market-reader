@@ -47,7 +47,9 @@ function calculateSupportResistanceLevels(
   if (!pivotHighs.includes(absoluteHigh)) pivotHighs.push(absoluteHigh);
   if (!pivotLows.includes(absoluteLow)) pivotLows.push(absoluteLow);
 
-  // Soglia di raggruppamento (cluster) per evitare livelli quasi identici (es. 0.3 * ATR oppure 0.15% del prezzo)
+  // Soglia di raggruppamento (cluster) per evitare livelli quasi identici
+  const isForex = currentPrice < 20;
+  const decimals = isForex ? 4 : 2;
   const clusterThreshold = atr > 0 ? atr * 0.4 : currentPrice * 0.0015;
 
   const clusterLevels = (levels: number[]): number[] => {
@@ -63,7 +65,7 @@ function calculateSupportResistanceLevels(
           clustered.push(level);
         } else {
           // Media ponderata/aggiornata del cluster
-          clustered[clustered.length - 1] = Number(((last + level) / 2).toFixed(2));
+          clustered[clustered.length - 1] = Number(((last + level) / 2).toFixed(decimals));
         }
       }
     }
@@ -97,8 +99,8 @@ function calculateSupportResistanceLevels(
   }
 
   return {
-    supports: supports.map((s) => Number(s.toFixed(2))),
-    resistances: resistances.map((r) => Number(r.toFixed(2))),
+    supports: supports.map((s) => Number(s.toFixed(decimals))),
+    resistances: resistances.map((r) => Number(r.toFixed(decimals))),
   };
 }
 
@@ -107,10 +109,14 @@ function calculateSupportResistanceLevels(
  * a partire dai dati delle candele e genera un riassunto strutturato pronto per un prompt AI.
  *
  * @param candles Array di candele (minimo 50 candele per calcolare l'EMA a 50 periodi)
+ * @param symbol Simbolo di mercato (es. "XAU/USD", "EUR/USD")
+ * @param timeframe Timeframe analizzato (es. "15m", "1h")
  * @returns TechnicalIndicatorsSummary con tutti i valori e il testo pronto per l'AI
  */
 export function calculateTechnicalIndicators(
-  candles: CandleData[]
+  candles: CandleData[],
+  symbol: string = "XAU/USD",
+  timeframe: string = "15m"
 ): TechnicalIndicatorsSummary {
   if (!candles || candles.length === 0) {
     throw new Error("Impossibile calcolare gli indicatori: array candele vuoto");
@@ -120,17 +126,21 @@ export function calculateTechnicalIndicators(
   const highs = candles.map((c) => c.high);
   const lows = candles.map((c) => c.low);
 
-  const currentPrice = Number(closes[closes.length - 1].toFixed(2));
+  const isForex = closes[closes.length - 1] < 20;
+  const decimals = isForex ? 4 : 2;
+  const atrDecimals = isForex ? 5 : 2;
+
+  const currentPrice = Number(closes[closes.length - 1].toFixed(decimals));
 
   // 1. EMA 20 periodi
   const ema20Array = EMA.calculate({ period: 20, values: closes });
   const rawEma20 = ema20Array.length > 0 ? ema20Array[ema20Array.length - 1] : null;
-  const ema20 = rawEma20 !== null ? Number(rawEma20.toFixed(2)) : null;
+  const ema20 = rawEma20 !== null ? Number(rawEma20.toFixed(decimals)) : null;
 
   // 2. EMA 50 periodi
   const ema50Array = EMA.calculate({ period: 50, values: closes });
   const rawEma50 = ema50Array.length > 0 ? ema50Array[ema50Array.length - 1] : null;
-  const ema50 = rawEma50 !== null ? Number(rawEma50.toFixed(2)) : null;
+  const ema50 = rawEma50 !== null ? Number(rawEma50.toFixed(decimals)) : null;
 
   // Valutazione trend EMA
   let emaTrend: "bullish" | "bearish" | "neutral" = "neutral";
@@ -162,7 +172,7 @@ export function calculateTechnicalIndicators(
     close: closes,
   });
   const rawAtr = atrArray.length > 0 ? atrArray[atrArray.length - 1] : null;
-  const atr14 = rawAtr !== null ? Number(rawAtr.toFixed(2)) : null;
+  const atr14 = rawAtr !== null ? Number(rawAtr.toFixed(atrDecimals)) : null;
 
   // 5. Supporti e Resistenze più rilevanti
   const { supports, resistances } = calculateSupportResistanceLevels(
@@ -171,25 +181,27 @@ export function calculateTechnicalIndicators(
     atr14 ?? 0
   );
 
+  const pricePrefix = isForex ? "" : "$";
+
   // 6. Generazione del testo formattato pronto per prompt AI
   const promptSummary = `
-### DATI DI MERCATO & INDICATORI TECNICI (Timeframe 15m)
-- **Prezzo Attuale (Close)**: $${currentPrice.toFixed(2)}
-- **EMA 20**: ${ema20 !== null ? `$${ema20.toFixed(2)}` : "Dati insufficienti"}
-- **EMA 50**: ${ema50 !== null ? `$${ema50.toFixed(2)}` : "Dati insufficienti"}
+### DATI DI MERCATO & INDICATORI TECNICI (${symbol} - Timeframe ${timeframe})
+- **Prezzo Attuale (Close)**: ${pricePrefix}${currentPrice.toFixed(decimals)}
+- **EMA 20**: ${ema20 !== null ? `${pricePrefix}${ema20.toFixed(decimals)}` : "Dati insufficienti"}
+- **EMA 50**: ${ema50 !== null ? `${pricePrefix}${ema50.toFixed(decimals)}` : "Dati insufficienti"}
 - **Trend EMA (20 vs 50)**: ${emaTrend.toUpperCase()} ${
     ema20 !== null && ema50 !== null
       ? `(EMA20 ${ema20 > ema50 ? ">" : "<"} EMA50)`
       : ""
   }
 - **RSI (14)**: ${rsi14 !== null ? `${rsi14.toFixed(2)} (${rsiCondition})` : "N/D"}
-- **ATR (14 - Volatilità media)**: ${atr14 !== null ? `$${atr14.toFixed(2)}` : "N/D"}
+- **ATR (14 - Volatilità media)**: ${atr14 !== null ? `${pricePrefix}${atr14.toFixed(atrDecimals)}` : "N/D"}
 - **Livelli Chiave di Resistenza**:
-  - R1 (Prima Resistenza): ${resistances[0] ? `$${resistances[0].toFixed(2)}` : "N/D"}
-  - R2 (Seconda Resistenza): ${resistances[1] ? `$${resistances[1].toFixed(2)}` : "N/D"}
+  - R1 (Prima Resistenza): ${resistances[0] ? `${pricePrefix}${resistances[0].toFixed(decimals)}` : "N/D"}
+  - R2 (Seconda Resistenza): ${resistances[1] ? `${pricePrefix}${resistances[1].toFixed(decimals)}` : "N/D"}
 - **Livelli Chiave di Supporto**:
-  - S1 (Primo Supporto): ${supports[0] ? `$${supports[0].toFixed(2)}` : "N/D"}
-  - S2 (Secondo Supporto): ${supports[1] ? `$${supports[1].toFixed(2)}` : "N/D"}
+  - S1 (Primo Supporto): ${supports[0] ? `${pricePrefix}${supports[0].toFixed(decimals)}` : "N/D"}
+  - S2 (Secondo Supporto): ${supports[1] ? `${supports[1].toFixed(decimals)}` : "N/D"}
 `.trim();
 
   return {

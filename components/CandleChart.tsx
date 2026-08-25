@@ -227,31 +227,37 @@ export function CandleChart({
             <p className="text-xs text-slate-400">Twelve Data Feed (Ultime 100 candele)</p>
           </div>
 
-          {currentCandle && (
-            <div className="hidden sm:flex flex-col pl-3 border-l border-slate-800">
-              <span className="text-lg font-bold font-mono text-white leading-tight">
-                ${currentCandle.close.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-              {priceChange && (
-                <div
-                  className={`flex items-center gap-1 text-xs font-semibold ${
-                    isPositive ? "text-emerald-400" : "text-red-400"
-                  }`}
-                >
-                  {isPositive ? (
-                    <TrendingUp className="w-3 h-3" />
-                  ) : (
-                    <TrendingDown className="w-3 h-3" />
-                  )}
-                  <span>
-                    {isPositive ? "+" : ""}
-                    {priceChange.diff.toFixed(2)} ({isPositive ? "+" : ""}
-                    {priceChange.pct.toFixed(2)}%)
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
+          {currentCandle && (() => {
+            const isForex = currentCandle.close < 20;
+            const decimals = isForex ? 4 : 2;
+            const prefix = isForex ? "" : "$";
+
+            return (
+              <div className="hidden sm:flex flex-col pl-3 border-l border-slate-800">
+                <span className="text-lg font-bold font-mono text-white leading-tight">
+                  {prefix}{currentCandle.close.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
+                </span>
+                {priceChange && (
+                  <div
+                    className={`flex items-center gap-1 text-xs font-semibold ${
+                      isPositive ? "text-emerald-400" : "text-red-400"
+                    }`}
+                  >
+                    {isPositive ? (
+                      <TrendingUp className="w-3 h-3" />
+                    ) : (
+                      <TrendingDown className="w-3 h-3" />
+                    )}
+                    <span>
+                      {isPositive ? "+" : ""}
+                      {priceChange.diff.toFixed(decimals)} ({isPositive ? "+" : ""}
+                      {priceChange.pct.toFixed(2)}%)
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Polling indicator & Refresh button con Countdown dinamico */}

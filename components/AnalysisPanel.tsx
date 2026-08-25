@@ -18,6 +18,7 @@ import {
   ArrowLeft,
   ChevronRight,
   Loader2,
+  CheckCircle2,
 } from "lucide-react";
 import {
   ExtendedMarketAnalysisResponse,
@@ -25,7 +26,11 @@ import {
   StoredManualAnalysis,
 } from "@/lib/types";
 
-export function AnalysisPanel() {
+export interface AnalysisPanelProps {
+  selectedSymbol?: string;
+}
+
+export function AnalysisPanel({ selectedSymbol = "XAU/USD" }: AnalysisPanelProps) {
   const [activeTab, setActiveTab] = useState<"analysis" | "history">("analysis");
   const [analysis, setAnalysis] =
     useState<ExtendedMarketAnalysisResponse | null>(null);
@@ -83,6 +88,7 @@ export function AnalysisPanel() {
         headers: {
           "Content-Type": "application/json",
         },
+        body: JSON.stringify({ symbol: selectedSymbol }),
       });
 
       const result = await response.json();
@@ -176,8 +182,13 @@ export function AnalysisPanel() {
     data: ExtendedMarketAnalysisResponse,
     indicatorsData?: TechnicalIndicatorsSummary | null,
     model?: string | null,
-    timestamp?: number | null
+    timestamp?: number | null,
+    symbolLabel?: string | null
   ) => {
+    const isForex = (indicatorsData?.currentPrice ?? 0) < 20;
+    const pricePrefix = isForex ? "" : "$";
+    const decimals = isForex ? 4 : 2;
+
     return (
       <div className="space-y-3.5">
         {/* Banner Giallo se Mercato Chiuso / Weekend */}
@@ -190,12 +201,12 @@ export function AnalysisPanel() {
           </div>
         )}
 
-        {/* Scheda Trend & Volatilità */}
+        {/* Scheda Trend, Volatilità & Conferma 1H */}
         <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/50 space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <span className="text-[11px] text-slate-400 font-medium block mb-1">
-                Trend Identificato
+                Trend 15M (Primario)
               </span>
               {renderTrendBadge(data.trend)}
             </div>
@@ -210,6 +221,28 @@ export function AnalysisPanel() {
             </div>
           </div>
 
+          {/* Conferma Trend 1H Multi-Timeframe */}
+          {data.conferma_trend && (
+            <div className="pt-2.5 border-t border-slate-700/40 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
+                Conferma Multi-TF (1H)
+              </span>
+              {data.conferma_trend.toLowerCase().includes("concorde") ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Concorde
+                </span>
+              ) : data.conferma_trend.toLowerCase().includes("discorde") ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  <AlertTriangle className="w-3 h-3 text-amber-400" /> Discorde
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">
+                  Neutrale
+                </span>
+              )}
+            </div>
+          )}
+
           <div className="pt-2.5 border-t border-slate-700/40 flex items-center justify-between">
             <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
               <Zap className="w-3.5 h-3.5 text-amber-400" /> Volatilità (ATR)
@@ -217,6 +250,7 @@ export function AnalysisPanel() {
             {renderVolatilityGauge(data.volatilita)}
           </div>
         </div>
+
 
         {/* Livelli Chiave */}
         {data.livelli_chiave && data.livelli_chiave.length > 0 && (
@@ -483,16 +517,16 @@ export function AnalysisPanel() {
                 </div>
                 <div>
                   <h3 className="text-xs font-semibold text-white">
-                    Nessuna analisi attiva
+                    Nessuna analisi attiva per {selectedSymbol}
                   </h3>
                   <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    Clicca su &quot;Analizza ora&quot; per interrogare il mercato XAUUSD con dati freschi a 15M e generare lo scenario AI.
+                    Clicca su &quot;Analizza ora&quot; per interrogare il mercato {selectedSymbol} con dati freschi a 15M e conferma 1H.
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={handleRunAnalysis}
-                  className="px-3.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold transition-colors"
+                  className="px-3.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold transition-colors cursor-pointer"
                 >
                   Analizza ora
                 </button>
@@ -517,7 +551,7 @@ export function AnalysisPanel() {
                     <span>Torna alla lista</span>
                   </button>
                   <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono">
-                    Storico
+                    {selectedHistoryItem.symbol || "XAU/USD"}
                   </span>
                 </div>
 
@@ -525,7 +559,8 @@ export function AnalysisPanel() {
                   selectedHistoryItem.analysis,
                   selectedHistoryItem.indicators,
                   selectedHistoryItem.modelUsed,
-                  selectedHistoryItem.timestamp
+                  selectedHistoryItem.timestamp,
+                  selectedHistoryItem.symbol
                 )}
               </div>
             ) : (
@@ -563,6 +598,11 @@ export function AnalysisPanel() {
 
                       const opType =
                         item.analysis.parametri_operativi?.tipo_operazione;
+                      const itemIsForex = item.symbol
+                        ? item.symbol.toUpperCase().includes("EUR") || item.currentPrice < 20
+                        : item.currentPrice < 20;
+                      const itemPricePrefix = itemIsForex ? "" : "$";
+                      const itemDecimals = itemIsForex ? 4 : 2;
 
                       return (
                         <div
@@ -572,9 +612,16 @@ export function AnalysisPanel() {
                         >
                           <div className="space-y-1.5 flex-1 min-w-0">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs font-bold text-white font-mono">
-                                ${item.currentPrice ? item.currentPrice.toFixed(2) : "--"}
-                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 border border-slate-700 text-slate-300 font-mono font-semibold">
+                                  {item.symbol || "XAU/USD"}
+                                </span>
+                                <span className="text-xs font-bold text-white font-mono">
+                                  {item.currentPrice
+                                    ? `${itemPricePrefix}${item.currentPrice.toFixed(itemDecimals)}`
+                                    : "--"}
+                                </span>
+                              </div>
                               <span className="text-[10px] text-slate-400 font-mono">
                                 {formattedDate} {formattedTime}
                               </span>
@@ -582,6 +629,19 @@ export function AnalysisPanel() {
 
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {renderTrendBadge(item.analysis.trend)}
+                              {item.analysis.conferma_trend && (
+                                <span
+                                  className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
+                                    item.analysis.conferma_trend.toLowerCase().includes("concorde")
+                                      ? "bg-emerald-950/60 text-emerald-300 border-emerald-700/40"
+                                      : item.analysis.conferma_trend.toLowerCase().includes("discorde")
+                                      ? "bg-amber-950/60 text-amber-300 border-amber-700/40"
+                                      : "bg-slate-800 text-slate-400 border-slate-700"
+                                  }`}
+                                >
+                                  1H {item.analysis.conferma_trend}
+                                </span>
+                              )}
                               {opType && opType !== "nessuna" && (
                                 <span
                                   className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase ${
