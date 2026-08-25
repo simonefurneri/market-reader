@@ -3,9 +3,12 @@
  */
 
 export interface TelegramAlertPayload {
+  symbol?: string;
   trend: string;
   forza_trend?: string;
   volatilita?: string;
+  conferma_trend?: string;
+  trend_1h?: string;
   livelli_chiave?: string[];
   scenario_probabile?: string;
   motivi_filtro?: string[];
@@ -50,6 +53,11 @@ export async function sendTelegramMarketAlert(
     process.env.NEXT_PUBLIC_APP_URL ||
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
+  const symbol = payload.symbol || "XAU/USD";
+  const isForex = (payload.currentPrice ?? 0) < 20;
+  const pricePrefix = isForex ? "" : "$";
+  const decimals = isForex ? 4 : 2;
+
   const trendEmoji =
     payload.trend.toLowerCase() === "rialzista"
       ? "🟢 <b>RIALZISTA (BULLISH)</b>"
@@ -57,8 +65,17 @@ export async function sendTelegramMarketAlert(
       ? "🔴 <b>RIBASSISTA (BEARISH)</b>"
       : "🟡 <b>LATERALE / CONSOLIDAMENTO</b>";
 
-  let message = `🚨 <b>MARKET ALERT - XAU/USD (15m)</b> 🚨\n\n`;
-  message += `📈 <b>Trend:</b> ${trendEmoji}\n`;
+  let message = `🚨 <b>MARKET ALERT - ${escapeHtml(symbol)} (15M)</b> 🚨\n\n`;
+  message += `📈 <b>Trend 15M:</b> ${trendEmoji}\n`;
+
+  if (payload.conferma_trend || payload.trend_1h) {
+    const cTrend = payload.conferma_trend || "concorde";
+    const cEmoji = cTrend.toLowerCase().includes("concorde") ? "✅" : "⚠️";
+    message += `${cEmoji} <b>Trend 1H:</b> ${escapeHtml(cTrend.toUpperCase())}${
+      payload.trend_1h ? ` (${escapeHtml(payload.trend_1h.toUpperCase())})` : ""
+    }\n`;
+  }
+
   if (payload.forza_trend) {
     message += `💪 <b>Forza Trend:</b> ${escapeHtml(payload.forza_trend.toUpperCase())}\n`;
   }
@@ -66,7 +83,7 @@ export async function sendTelegramMarketAlert(
     message += `⚡ <b>Volatilità:</b> ${escapeHtml(payload.volatilita.toUpperCase())}\n`;
   }
   if (payload.currentPrice !== undefined) {
-    message += `💵 <b>Prezzo Attuale:</b> $${payload.currentPrice.toFixed(2)}\n`;
+    message += `💵 <b>Prezzo Attuale:</b> ${pricePrefix}${payload.currentPrice.toFixed(decimals)}\n`;
   }
 
   message += `\n`;

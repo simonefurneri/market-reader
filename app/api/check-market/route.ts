@@ -95,6 +95,8 @@ async function authenticateRequest(
   return { isAuthorized: false, authType: "none" };
 }
 
+const MONITORED_SYMBOLS = ["XAU/USD", "EUR/USD"];
+
 /**
  * Gestore unificato per le richieste di controllo mercato (supporta GET e POST).
  */
@@ -127,27 +129,33 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
 
   try {
     // --------------------------------------------------------------------------
-    // STEP 1: CONTROLLO STATO MERCATO (ORARI FOREX/XAUUSD) - PRIMISSIMO STEP
-    // Se il mercato è chiuso, restituisce subito senza fare alcun fetch né chiamate AI
+    // STEP 1: CONTROLLO STATO MERCATO (ORARI FOREX/XAUUSD)
+    // Se il mercato è chiuso, salva il log ed esce subito
     // --------------------------------------------------------------------------
     const marketStatus = getMarketHoursStatus();
 
     if (!marketStatus.isOpen || !isMarketOpen()) {
-      await saveLastCheckLog({
-        timestamp: Date.now(),
-        marketOpen: false,
-        signalDetected: false,
-        consecutiveSignalCount: 0,
-        alertSent: false,
-        message: `Mercato chiuso (${marketStatus.message})`,
-        authType,
-        rsi: null,
-        atr: null,
-        atrAvg: null,
-        breakoutDetected: false,
-        levelBroken: null,
-        breakoutType: null,
-      });
+      const now = Date.now();
+      for (const sym of MONITORED_SYMBOLS) {
+        await saveLastCheckLog({
+          timestamp: now,
+          symbol: sym,
+          marketOpen: false,
+          signalDetected: false,
+          consecutiveSignalCount: 0,
+          alertSent: false,
+          message: `Mercato chiuso (${marketStatus.message})`,
+          authType,
+          rsi: null,
+          atr: null,
+          atrAvg: null,
+          breakoutDetected: false,
+          levelBroken: null,
+          breakoutType: null,
+          trend1h: null,
+          confermaTrend: null,
+        });
+      }
 
       return NextResponse.json(
         {
@@ -167,352 +175,397 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
     }
 
     // --------------------------------------------------------------------------
-    // STEP 2: RECUPERO DATI LIVE E CALCOLO INDICATORI TECNICI
-    // (Usa cache Redis: per 15M con TTL 4 min risulterà cache miss ogni 5 min;
-    // per 1H con TTL 18 min userà la cache se presente)
+    // STEP 2: ITERAZIONE SU TUTTI I SIMBOLI CONFIGURATI
     // --------------------------------------------------------------------------
-    const candles = await fetchCandlesWithCache({
-      symbol: "XAU/USD",
-      timeframe: "15M",
-      outputsize: 100,
-      forceRefresh: false,
-    });
+    const symbolResults: Array<{
+      symbol: string;
+      checked: boolean;
+      signalDetected: boolean;
+      signalObserving?: boolean;
+      cooldownActive?: boolean;
+      consecutiveSignalCount: number;
+      alertSent: boolean;
+      currentPrice?: number;
+      message: string;
+      filterResult?: unknown;
+      aiAnalysis?: ExtendedMarketAnalysisResponse | null;
+    }> = [];
 
-    // Prelievo candele 1H da cache (se presenti) per allineamento cache
-    await fetchCandlesWithCache({
-      symbol: "XAU/USD",
-      timeframe: "1H",
-      outputsize: 100,
-      forceRefresh: false,
-    }).catch((err) => {
-      console.warn("[CHECK-MARKET] Warning prelievo candele 1H:", err);
-      return null;
-    });
+    let totalAlertsSent = 0;
 
-    if (!candles || candles.length === 0) {
-      await saveLastCheckLog({
-        timestamp: Date.now(),
-        marketOpen: true,
-        signalDetected: false,
-        consecutiveSignalCount: 0,
-        alertSent: false,
-        message: "Errore recupero candele Twelve Data",
-        authType,
-        rsi: null,
-        atr: null,
-        atrAvg: null,
-        breakoutDetected: false,
-        levelBroken: null,
-        breakoutType: null,
-      });
+    for (const symbol of MONITORED_SYMBOLS) {
+      try {
+        const isForex = symbol.toUpperCase().includes("EUR");
+        const decimals = isForex ? 4 : 2;
 
-      return NextResponse.json(
-        {
-          checked: false,
-          marketOpen: true,
-          alert: false,
-          error: "Dati di mercato non disponibili da Twelve Data.",
-        },
-        { status: 502 }
-      );
-    }
-
-    const indicators = calculateTechnicalIndicators(candles);
-
-    // --------------------------------------------------------------------------
-    // STEP 3: APPLICAZIONE DEL FILTRO LOCALE RAFFORZATO (>= 2 condizioni su 3)
-    // --------------------------------------------------------------------------
-    const filterResult = checkPotentialOpportunity(indicators, candles);
-
-    // Indicatori grezzi usati per la decisione
-    const rawRsi = filterResult.dettagli.rsiValore ?? indicators.rsi14 ?? null;
-    const rawAtr = filterResult.dettagli.atrAttuale ?? indicators.atr14 ?? null;
-    const rawAtrAvg = filterResult.dettagli.atrMediaStorica ?? null;
-    const rawBreakoutDetected = Boolean(
-      filterResult.dettagli.breakoutResistenza || filterResult.dettagli.breakoutSupporto
-    );
-    const rawLevelBroken = filterResult.dettagli.livelloRotto ?? null;
-    const rawBreakoutType = filterResult.dettagli.tipoBreakout ?? null;
-
-    // --------------------------------------------------------------------------
-    // STEP 4: GESTIONE PERSISTENZA SEGNALI CON VERCEL KV / UPSTASH REDIS
-    // --------------------------------------------------------------------------
-
-    // CASO A: Il filtro NON rileva alcun segnale -> Reset contatore segnali continui
-    if (!filterResult.potenzialeOpportunita) {
-      await resetConsecutiveSignalCount();
-
-      await saveLastCheckLog({
-        timestamp: Date.now(),
-        marketOpen: true,
-        signalDetected: false,
-        consecutiveSignalCount: 0,
-        alertSent: false,
-        message: "Nessun segnale (mercato in consolidamento)",
-        currentPrice: indicators.currentPrice,
-        authType,
-        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
-        motivi: filterResult.motivi,
-        rsi: rawRsi,
-        atr: rawAtr,
-        atrAvg: rawAtrAvg,
-        breakoutDetected: rawBreakoutDetected,
-        levelBroken: rawLevelBroken,
-        breakoutType: rawBreakoutType,
-      });
-
-      const responsePayload: CheckMarketApiResponse = {
-        checked: true,
-        marketOpen: true,
-        alert: false,
-        signalObserving: false,
-        consecutiveSignalCount: 0,
-        requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
-        reason: filterResult.motivazione,
-        currentPrice: indicators.currentPrice,
-        marketStatus: {
-          isOpen: marketStatus.isOpen,
-          isClosed: marketStatus.isClosed,
-          message: marketStatus.message,
-        },
-        filterResult,
-      };
-
-      return NextResponse.json(responsePayload, { status: 200 });
-    }
-
-    // CASO B: Il filtro rileva una potenziale opportunità -> Incremento contatore
-    const consecutiveSignalCount = await incrementConsecutiveSignalCount();
-    const storageState = await getMarketStorageState();
-
-    // SOTTO-CASO B1: Segnale in osservazione (sotto la soglia di N controlli consecutivi)
-    if (consecutiveSignalCount < REQUIRED_CONSECUTIVE_SIGNALS) {
-      await saveLastCheckLog({
-        timestamp: Date.now(),
-        marketOpen: true,
-        signalDetected: true,
-        consecutiveSignalCount,
-        alertSent: false,
-        message: `Segnale in osservazione (${consecutiveSignalCount}/${REQUIRED_CONSECUTIVE_SIGNALS})`,
-        currentPrice: indicators.currentPrice,
-        authType,
-        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
-        motivi: filterResult.motivi,
-        rsi: rawRsi,
-        atr: rawAtr,
-        atrAvg: rawAtrAvg,
-        breakoutDetected: rawBreakoutDetected,
-        levelBroken: rawLevelBroken,
-        breakoutType: rawBreakoutType,
-      });
-
-      const responsePayload: CheckMarketApiResponse = {
-        checked: true,
-        marketOpen: true,
-        alert: false,
-        signalObserving: true,
-        consecutiveSignalCount,
-        requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
-        reason: `Segnale in osservazione: rilevazione ${consecutiveSignalCount}/${REQUIRED_CONSECUTIVE_SIGNALS} consecutive. In attesa di persistenza prima dell'analisi AI.`,
-        currentPrice: indicators.currentPrice,
-        marketStatus: {
-          isOpen: marketStatus.isOpen,
-          isClosed: marketStatus.isClosed,
-          message: marketStatus.message,
-        },
-        filterResult,
-      };
-
-      return NextResponse.json(responsePayload, { status: 200 });
-    }
-
-    // SOTTO-CASO B2: Segnale persistente raggiunto (>= REQUIRED_CONSECUTIVE_SIGNALS)
-    // Verifica del cooldown dall'ultimo alert inviato (default 60 min)
-    const now = Date.now();
-    const lastAlertTimestamp = storageState.lastAlertTimestamp || 0;
-    const msSinceLastAlert = now - lastAlertTimestamp;
-    const minutesSinceLastAlert =
-      lastAlertTimestamp > 0 ? Math.floor(msSinceLastAlert / (1000 * 60)) : 9999;
-
-    if (lastAlertTimestamp > 0 && minutesSinceLastAlert < ALERT_COOLDOWN_MINUTES) {
-      await saveLastCheckLog({
-        timestamp: Date.now(),
-        marketOpen: true,
-        signalDetected: true,
-        consecutiveSignalCount,
-        alertSent: false,
-        message: `Segnale valido ma alert in cooldown (${minutesSinceLastAlert}/${ALERT_COOLDOWN_MINUTES} min)`,
-        currentPrice: indicators.currentPrice,
-        authType,
-        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
-        motivi: filterResult.motivi,
-        rsi: rawRsi,
-        atr: rawAtr,
-        atrAvg: rawAtrAvg,
-        breakoutDetected: rawBreakoutDetected,
-        levelBroken: rawLevelBroken,
-        breakoutType: rawBreakoutType,
-      });
-
-      const responsePayload: CheckMarketApiResponse = {
-        checked: true,
-        marketOpen: true,
-        alert: false,
-        cooldownActive: true,
-        minutesSinceLastAlert,
-        cooldownMinutes: ALERT_COOLDOWN_MINUTES,
-        consecutiveSignalCount,
-        requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
-        reason: `Segnale valido persistente (${consecutiveSignalCount} consecutivi), ma alert in cooldown (${minutesSinceLastAlert}/${ALERT_COOLDOWN_MINUTES} min trascorsi dall'ultima notifica).`,
-        currentPrice: indicators.currentPrice,
-        marketStatus: {
-          isOpen: marketStatus.isOpen,
-          isClosed: marketStatus.isClosed,
-          message: marketStatus.message,
-        },
-        filterResult,
-      };
-
-      return NextResponse.json(responsePayload, { status: 200 });
-    }
-
-    // --------------------------------------------------------------------------
-    // STEP 5: SEGNALE PERSISTENTE E COOLDOWN SUPERATO -> ANALISI GEMINI UNIFICATA
-    // --------------------------------------------------------------------------
-    let aiAnalysis: ExtendedMarketAnalysisResponse | null = null;
-    let modelUsed: string | null = null;
-
-    try {
-      const analyzeResponse = await analyzeMarket(indicators, {
-        skipGeminiIfNoSignal: true,
-        candles,
-      });
-
-      if (!analyzeResponse) {
-        // Se null (nessun segnale valido per analyzeMarket), esce pulito
-        return NextResponse.json({
-          checked: true,
-          marketOpen: true,
-          alert: false,
-          reason: filterResult.motivazione,
-          filterResult,
+        // 1. Candele 15M SEMPRE fresche (forceRefresh = true: bypass cache TwelveData, poi salva su Redis)
+        const candles15m = await fetchCandlesWithCache({
+          symbol,
+          timeframe: "15M",
+          outputsize: 100,
+          forceRefresh: true,
         });
+
+        if (!candles15m || candles15m.length === 0) {
+          await saveLastCheckLog({
+            timestamp: Date.now(),
+            symbol,
+            marketOpen: true,
+            signalDetected: false,
+            consecutiveSignalCount: 0,
+            alertSent: false,
+            message: `Errore recupero candele 15M per ${symbol}`,
+            authType,
+            rsi: null,
+            atr: null,
+            atrAvg: null,
+            breakoutDetected: false,
+            levelBroken: null,
+            breakoutType: null,
+            trend1h: null,
+            confermaTrend: null,
+          });
+
+          symbolResults.push({
+            symbol,
+            checked: false,
+            signalDetected: false,
+            consecutiveSignalCount: 0,
+            alertSent: false,
+            message: `Dati 15M non disponibili da Twelve Data per ${symbol}`,
+          });
+          continue;
+        }
+
+        // 2. Candele 1H da cache condivisa (TTL 18 min, se presente altrimenti fetch TwelveData e salva in cache)
+        const candles1h = await fetchCandlesWithCache({
+          symbol,
+          timeframe: "1H",
+          outputsize: 100,
+          forceRefresh: false,
+        }).catch((err) => {
+          console.warn(`[CHECK-MARKET] Warning prelievo candele 1H per ${symbol}:`, err);
+          return null;
+        });
+
+        // 3. Calcolo indicatori tecnici sul 15M e sull'1H
+        const indicators15m = calculateTechnicalIndicators(candles15m, symbol, "15m");
+        const indicators1h =
+          candles1h && candles1h.length >= 20
+            ? calculateTechnicalIndicators(candles1h, symbol, "1h")
+            : undefined;
+
+        // 4. Applicazione del filtro locale opportunita sul 15M (>= 2 condizioni su 3)
+        const filterResult = checkPotentialOpportunity(indicators15m, candles15m);
+
+        // Indicatori grezzi per log / dashboard
+        const rawRsi = filterResult.dettagli.rsiValore ?? indicators15m.rsi14 ?? null;
+        const rawAtr = filterResult.dettagli.atrAttuale ?? indicators15m.atr14 ?? null;
+        const rawAtrAvg = filterResult.dettagli.atrMediaStorica ?? null;
+        const rawBreakoutDetected = Boolean(
+          filterResult.dettagli.breakoutResistenza || filterResult.dettagli.breakoutSupporto
+        );
+        const rawLevelBroken = filterResult.dettagli.livelloRotto ?? null;
+        const rawBreakoutType = filterResult.dettagli.tipoBreakout ?? null;
+
+        // 5. Calcolo direzione trend sull'1H confrontando EMA20 vs EMA50
+        let trend1h: "rialzista" | "ribassista" | "laterale" = "laterale";
+        if (indicators1h && indicators1h.ema20 !== null && indicators1h.ema50 !== null) {
+          if (indicators1h.ema20 > indicators1h.ema50) {
+            trend1h = "rialzista";
+          } else if (indicators1h.ema20 < indicators1h.ema50) {
+            trend1h = "ribassista";
+          }
+        }
+
+        // Calcolo direzione implicita del segnale 15M
+        let direction15m: "rialzista" | "ribassista" | "neutrale" = "neutrale";
+        let bullishPoints = 0;
+        let bearishPoints = 0;
+
+        if (filterResult.dettagli.breakoutResistenza) bullishPoints += 2;
+        if (filterResult.dettagli.breakoutSupporto) bearishPoints += 2;
+
+        if (filterResult.dettagli.rsiValore !== null && filterResult.dettagli.rsiValore !== undefined) {
+          if (filterResult.dettagli.rsiValore >= 60) bullishPoints += 1;
+          else if (filterResult.dettagli.rsiValore <= 40) bearishPoints += 1;
+        }
+
+        if (indicators15m.emaTrend === "bullish") bullishPoints += 1;
+        else if (indicators15m.emaTrend === "bearish") bearishPoints += 1;
+
+        if (bullishPoints > bearishPoints) direction15m = "rialzista";
+        else if (bearishPoints > bullishPoints) direction15m = "ribassista";
+
+        // Verifica concordanza multi-timeframe (15M vs 1H)
+        let isConcorde = false;
+        let isDiscorde = false;
+
+        if (direction15m === "rialzista" && trend1h === "rialzista") {
+          isConcorde = true;
+        } else if (direction15m === "ribassista" && trend1h === "ribassista") {
+          isConcorde = true;
+        } else if (
+          (direction15m === "rialzista" && trend1h === "ribassista") ||
+          (direction15m === "ribassista" && trend1h === "rialzista")
+        ) {
+          isDiscorde = true;
+        }
+
+        const confermaTrendLabel = isConcorde
+          ? "concorde"
+          : isDiscorde
+          ? "discorde"
+          : "neutrale";
+
+        // 6. Il segnale è valido SOLO se 15M ha 2+ condizioni E la direzione 15M è concorde con 1H
+        const isSignalValid = filterResult.potenzialeOpportunita && isConcorde;
+
+        // CASO A: Nessun segnale valido (non soddisfa 15M o discorde con 1H)
+        if (!isSignalValid) {
+          await resetConsecutiveSignalCount(symbol);
+
+          const failureReason = filterResult.potenzialeOpportunita && isDiscorde
+            ? `Filtro 15M rilevato ma scartato: trend 1H discorde (15M ${direction15m} vs 1H ${trend1h})`
+            : "Nessun segnale (mercato in consolidamento)";
+
+          await saveLastCheckLog({
+            timestamp: Date.now(),
+            symbol,
+            marketOpen: true,
+            signalDetected: false,
+            consecutiveSignalCount: 0,
+            alertSent: false,
+            message: failureReason,
+            currentPrice: indicators15m.currentPrice,
+            authType,
+            condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+            motivi: filterResult.motivi,
+            rsi: rawRsi,
+            atr: rawAtr,
+            atrAvg: rawAtrAvg,
+            breakoutDetected: rawBreakoutDetected,
+            levelBroken: rawLevelBroken,
+            breakoutType: rawBreakoutType,
+            trend1h,
+            confermaTrend: confermaTrendLabel,
+          });
+
+          symbolResults.push({
+            symbol,
+            checked: true,
+            signalDetected: false,
+            consecutiveSignalCount: 0,
+            alertSent: false,
+            currentPrice: indicators15m.currentPrice,
+            message: failureReason,
+            filterResult,
+          });
+          continue;
+        }
+
+        // CASO B: Segnale valido e concorde -> Gestione persistenza per-simbolo
+        const consecutiveSignalCount = await incrementConsecutiveSignalCount(symbol);
+        const storageState = await getMarketStorageState(symbol);
+
+        // B1: Segnale in osservazione (< REQUIRED_CONSECUTIVE_SIGNALS)
+        if (consecutiveSignalCount < REQUIRED_CONSECUTIVE_SIGNALS) {
+          const msg = `Segnale in osservazione (${consecutiveSignalCount}/${REQUIRED_CONSECUTIVE_SIGNALS}) - Trend 1H concorde`;
+
+          await saveLastCheckLog({
+            timestamp: Date.now(),
+            symbol,
+            marketOpen: true,
+            signalDetected: true,
+            consecutiveSignalCount,
+            alertSent: false,
+            message: msg,
+            currentPrice: indicators15m.currentPrice,
+            authType,
+            condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+            motivi: filterResult.motivi,
+            rsi: rawRsi,
+            atr: rawAtr,
+            atrAvg: rawAtrAvg,
+            breakoutDetected: rawBreakoutDetected,
+            levelBroken: rawLevelBroken,
+            breakoutType: rawBreakoutType,
+            trend1h,
+            confermaTrend: "concorde",
+          });
+
+          symbolResults.push({
+            symbol,
+            checked: true,
+            signalDetected: true,
+            signalObserving: true,
+            consecutiveSignalCount,
+            alertSent: false,
+            currentPrice: indicators15m.currentPrice,
+            message: msg,
+            filterResult,
+          });
+          continue;
+        }
+
+        // B2: Segnale persistente (>= 3 verifiche) -> Controllo Cooldown per-simbolo
+        const now = Date.now();
+        const lastAlertTimestamp = storageState.lastAlertTimestamp || 0;
+        const msSinceLastAlert = now - lastAlertTimestamp;
+        const minutesSinceLastAlert =
+          lastAlertTimestamp > 0 ? Math.floor(msSinceLastAlert / (1000 * 60)) : 9999;
+
+        if (lastAlertTimestamp > 0 && minutesSinceLastAlert < ALERT_COOLDOWN_MINUTES) {
+          const msg = `Segnale valido persistente ma alert in cooldown (${minutesSinceLastAlert}/${ALERT_COOLDOWN_MINUTES} min)`;
+
+          await saveLastCheckLog({
+            timestamp: now,
+            symbol,
+            marketOpen: true,
+            signalDetected: true,
+            consecutiveSignalCount,
+            alertSent: false,
+            message: msg,
+            currentPrice: indicators15m.currentPrice,
+            authType,
+            condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+            motivi: filterResult.motivi,
+            rsi: rawRsi,
+            atr: rawAtr,
+            atrAvg: rawAtrAvg,
+            breakoutDetected: rawBreakoutDetected,
+            levelBroken: rawLevelBroken,
+            breakoutType: rawBreakoutType,
+            trend1h,
+            confermaTrend: "concorde",
+          });
+
+          symbolResults.push({
+            symbol,
+            checked: true,
+            signalDetected: true,
+            cooldownActive: true,
+            consecutiveSignalCount,
+            alertSent: false,
+            currentPrice: indicators15m.currentPrice,
+            message: msg,
+            filterResult,
+          });
+          continue;
+        }
+
+        // 7. Segnale persistente e cooldown superato -> Analisi Gemini AI Multi-Timeframe
+        let aiAnalysis: ExtendedMarketAnalysisResponse | null = null;
+        try {
+          aiAnalysis = await analyzeMarket(indicators15m, {
+            symbol,
+            skipGeminiIfNoSignal: true,
+            candles: candles15m,
+            candles1h: candles1h || undefined,
+            indicators1h,
+          });
+        } catch (aiErr) {
+          console.error(`[CHECK-MARKET] Errore AI per ${symbol}:`, aiErr);
+        }
+
+        const isAiConfirmed =
+          aiAnalysis &&
+          aiAnalysis.conferma_opportunita !== false &&
+          aiAnalysis.parametri_operativi?.opportunita_valida !== false;
+
+        let telegramSent = false;
+        let telegramError: string | undefined;
+
+        if (isAiConfirmed && aiAnalysis) {
+          const mtfMotive = `Trend 1H concorde: EMA20 (${indicators1h?.ema20?.toFixed(decimals)}) ${
+            trend1h === "rialzista" ? ">" : "<"
+          } EMA50 (${indicators1h?.ema50?.toFixed(decimals)}) [${trend1h.toUpperCase()}]`;
+
+          const telegramResult = await sendTelegramMarketAlert({
+            symbol,
+            trend: aiAnalysis.trend,
+            forza_trend: aiAnalysis.forza_trend,
+            volatilita: aiAnalysis.volatilita,
+            conferma_trend: "concorde",
+            trend_1h: trend1h,
+            livelli_chiave: aiAnalysis.livelli_chiave,
+            scenario_probabile: aiAnalysis.scenario_probabile,
+            motivi_filtro: [...filterResult.motivi, mtfMotive],
+            entry_price: aiAnalysis.parametri_operativi?.entry_price,
+            stop_loss: aiAnalysis.parametri_operativi?.stop_loss,
+            take_profit: aiAnalysis.parametri_operativi?.take_profit,
+            rischio: aiAnalysis.parametri_operativi?.rischio,
+            currentPrice: indicators15m.currentPrice,
+          });
+
+          telegramSent = telegramResult.success;
+          telegramError = telegramResult.error;
+
+          if (telegramSent) {
+            totalAlertsSent += 1;
+          }
+
+          // Aggiornamento storage per questo simbolo: salva timestamp e azzera contatore
+          await recordAlertSent(symbol, now);
+        }
+
+        const outcomeMessage = isAiConfirmed
+          ? telegramSent
+            ? `Alert inviato con successo su Telegram per ${symbol}`
+            : `Alert confermato dall'AI per ${symbol} (errore invio Telegram)`
+          : `Segnale persistente per ${symbol} non confermato dall'analisi AI`;
+
+        await saveLastCheckLog({
+          timestamp: Date.now(),
+          symbol,
+          marketOpen: true,
+          signalDetected: true,
+          consecutiveSignalCount,
+          alertSent: telegramSent,
+          message: outcomeMessage,
+          currentPrice: indicators15m.currentPrice,
+          authType,
+          condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
+          motivi: filterResult.motivi,
+          rsi: rawRsi,
+          atr: rawAtr,
+          atrAvg: rawAtrAvg,
+          breakoutDetected: rawBreakoutDetected,
+          levelBroken: rawLevelBroken,
+          breakoutType: rawBreakoutType,
+          trend1h,
+          confermaTrend: "concorde",
+        });
+
+        symbolResults.push({
+          symbol,
+          checked: true,
+          signalDetected: true,
+          consecutiveSignalCount,
+          alertSent: telegramSent,
+          currentPrice: indicators15m.currentPrice,
+          message: outcomeMessage,
+          filterResult,
+          aiAnalysis,
+        });
+      } catch (symbolErr) {
+        console.error(`[CHECK-MARKET] Errore elaborazione simbolo ${symbol}:`, symbolErr);
       }
-
-      aiAnalysis = analyzeResponse;
-      modelUsed = analyzeResponse.modelUsed || null;
-    } catch (aiErr) {
-      console.error("[CHECK-MARKET] Errore elaborazione AI:", aiErr);
-      await saveLastCheckLog({
-        timestamp: Date.now(),
-        marketOpen: true,
-        signalDetected: true,
-        consecutiveSignalCount,
-        alertSent: false,
-        message: "Filtro superato ma elaborazione AI fallita",
-        currentPrice: indicators.currentPrice,
-        authType,
-        condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
-        motivi: filterResult.motivi,
-        rsi: rawRsi,
-        atr: rawAtr,
-        atrAvg: rawAtrAvg,
-        breakoutDetected: rawBreakoutDetected,
-        levelBroken: rawLevelBroken,
-        breakoutType: rawBreakoutType,
-      });
-
-      return NextResponse.json({
-        checked: true,
-        marketOpen: true,
-        alert: false,
-        warning: "Filtro locale superato ma fallita l'elaborazione AI.",
-        filterResult,
-      });
     }
-
-    // --------------------------------------------------------------------------
-    // STEP 6: NOTIFICA TELEGRAM SE CONFERMATA DALL'AI E AGGIORNAMENTO STORAGE
-    // --------------------------------------------------------------------------
-    const isAiConfirmed =
-      aiAnalysis.conferma_opportunita !== false &&
-      aiAnalysis.parametri_operativi?.opportunita_valida !== false;
-
-    let telegramSent = false;
-    let telegramError: string | undefined;
-
-    if (isAiConfirmed) {
-      const telegramResult = await sendTelegramMarketAlert({
-        trend: aiAnalysis.trend,
-        forza_trend: aiAnalysis.forza_trend,
-        volatilita: aiAnalysis.volatilita,
-        livelli_chiave: aiAnalysis.livelli_chiave,
-        scenario_probabile: aiAnalysis.scenario_probabile,
-        motivi_filtro: filterResult.motivi,
-        entry_price: aiAnalysis.parametri_operativi?.entry_price,
-        stop_loss: aiAnalysis.parametri_operativi?.stop_loss,
-        take_profit: aiAnalysis.parametri_operativi?.take_profit,
-        rischio: aiAnalysis.parametri_operativi?.rischio,
-        currentPrice: indicators.currentPrice,
-      });
-
-      telegramSent = telegramResult.success;
-      telegramError = telegramResult.error;
-
-      // Aggiornamento storage: salva lastAlertTimestamp e resetta consecutiveSignalCount
-      await recordAlertSent(now);
-    }
-
-    const outcomeMessage = isAiConfirmed
-      ? telegramSent
-        ? "Alert inviato con successo su Telegram"
-        : "Alert confermato dall'AI (errore nell'invio Telegram)"
-      : "Segnale persistente non confermato dall'analisi AI";
-
-    await saveLastCheckLog({
-      timestamp: Date.now(),
-      marketOpen: true,
-      signalDetected: true,
-      consecutiveSignalCount,
-      alertSent: telegramSent,
-      message: outcomeMessage,
-      currentPrice: indicators.currentPrice,
-      authType,
-      condizioniSoddisfatte: filterResult.dettagli.condizioniSoddisfatte,
-      motivi: filterResult.motivi,
-      rsi: rawRsi,
-      atr: rawAtr,
-      atrAvg: rawAtrAvg,
-      breakoutDetected: rawBreakoutDetected,
-      levelBroken: rawLevelBroken,
-      breakoutType: rawBreakoutType,
-    });
-
-    const responsePayload: CheckMarketApiResponse = {
-      checked: true,
-      marketOpen: true,
-      alert: isAiConfirmed,
-      telegramSent,
-      telegramError,
-      consecutiveSignalCount,
-      requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
-      minutesSinceLastAlert: isAiConfirmed ? 0 : minutesSinceLastAlert,
-      cooldownMinutes: ALERT_COOLDOWN_MINUTES,
-      currentPrice: indicators.currentPrice,
-      marketStatus: {
-        isOpen: marketStatus.isOpen,
-        isClosed: marketStatus.isClosed,
-        message: marketStatus.message,
-      },
-      filterResult,
-      aiAnalysis,
-    };
-
 
     return NextResponse.json(
       {
-        ...responsePayload,
-        modelUsed,
+        checked: true,
+        marketOpen: true,
+        alert: totalAlertsSent > 0,
+        symbolsChecked: MONITORED_SYMBOLS,
+        totalAlertsSent,
+        results: symbolResults,
+        marketStatus: {
+          isOpen: marketStatus.isOpen,
+          isClosed: marketStatus.isClosed,
+          message: marketStatus.message,
+        },
         authType,
       },
       { status: 200 }
@@ -524,6 +577,7 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
 
     await saveLastCheckLog({
       timestamp: Date.now(),
+      symbol: "XAU/USD",
       marketOpen: true,
       signalDetected: false,
       consecutiveSignalCount: 0,
@@ -536,6 +590,8 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
       breakoutDetected: false,
       levelBroken: null,
       breakoutType: null,
+      trend1h: null,
+      confermaTrend: null,
     });
 
     return NextResponse.json(
@@ -556,3 +612,4 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 export async function POST(req: NextRequest): Promise<NextResponse> {
   return handleCheckMarket(req);
 }
+

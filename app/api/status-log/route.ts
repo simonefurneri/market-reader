@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
-import { getLastCheckLog, getCheckHistory } from "@/lib/kv";
+import { getLastCheckLog, getLastCheckLogs, getCheckHistory } from "@/lib/kv";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [log, history] = await Promise.all([
+    const [log, logs, history] = await Promise.all([
       getLastCheckLog(),
+      getLastCheckLogs(),
       getCheckHistory(288),
     ]);
-    return NextResponse.json({ success: true, log, history });
+    return NextResponse.json({ success: true, log, logs, history });
   } catch (err) {
     console.error("[API STATUS-LOG Error]:", err);
     return NextResponse.json(

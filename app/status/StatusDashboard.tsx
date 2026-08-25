@@ -27,6 +27,7 @@ import { MarketCheckLog } from "@/lib/kv";
 
 interface StatusDashboardProps {
   initialLog: MarketCheckLog | null;
+  initialLogs?: Record<string, MarketCheckLog>;
   initialHistory?: MarketCheckLog[];
 }
 
@@ -34,9 +35,11 @@ const STATUS_REFRESH_INTERVAL_SECONDS = 30;
 
 export function StatusDashboard({
   initialLog,
+  initialLogs = {},
   initialHistory = [],
 }: StatusDashboardProps) {
   const [log, setLog] = useState<MarketCheckLog | null>(initialLog);
+  const [logs, setLogs] = useState<Record<string, MarketCheckLog>>(initialLogs);
   const [history, setHistory] = useState<MarketCheckLog[]>(initialHistory);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -45,10 +48,31 @@ export function StatusDashboard({
   );
   const [currentTime, setCurrentTime] = useState<number>(() => Date.now());
 
+  // Selezione simbolo per le card di riepilogo e Dettaglio Ultimo Esito
+  const [selectedOverviewSymbol, setSelectedOverviewSymbol] = useState<string>("XAU/USD");
+
   // Filtri tabella storico
+  const [selectedSymbolFilter, setSelectedSymbolFilter] = useState<string>("ALL");
   const [onlyMarketOpen, setOnlyMarketOpen] = useState(false);
   const [onlySignals, setOnlySignals] = useState(false);
   const [displayLimit, setDisplayLimit] = useState<number>(50);
+
+  const availableSymbols = useMemo(() => ["XAU/USD", "EUR/USD"], []);
+
+  // Risolve l'ultimo log per il simbolo selezionato per l'overview
+  const activeLog = useMemo(() => {
+    const normTarget = selectedOverviewSymbol.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+    if (logs && logs[normTarget]) {
+      return logs[normTarget];
+    }
+    if (history && history.length > 0) {
+      const found = history.find(
+        (h) => (h.symbol || "XAU/USD").replace(/[^a-zA-Z0-9]/g, "").toUpperCase() === normTarget
+      );
+      if (found) return found;
+    }
+    return log;
+  }, [logs, history, log, selectedOverviewSymbol]);
 
   useEffect(() => {
     setMounted(true);
@@ -63,6 +87,9 @@ export function StatusDashboard({
         if (data.success) {
           if (data.log) {
             setLog(data.log);
+          }
+          if (data.logs && typeof data.logs === "object") {
+            setLogs(data.logs);
           }
           if (Array.isArray(data.history)) {
             setHistory(data.history);
@@ -154,12 +181,19 @@ export function StatusDashboard({
   const filteredHistory = useMemo(() => {
     return history
       .filter((item) => {
+        if (selectedSymbolFilter !== "ALL") {
+          const normItem = (item.symbol || "XAU/USD").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+          const normTarget = selectedSymbolFilter.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+          if (normItem !== normTarget) {
+            return false;
+          }
+        }
         if (onlyMarketOpen && !item.marketOpen) return false;
         if (onlySignals && !item.signalDetected) return false;
         return true;
       })
       .slice(0, displayLimit);
-  }, [history, onlyMarketOpen, onlySignals, displayLimit]);
+  }, [history, selectedSymbolFilter, onlyMarketOpen, onlySignals, displayLimit]);
 
   // Helper per calcolare sempre il numero di condizioni tecniche soddisfatte (su 3 richieste)
   const getCondizioniCount = (item: MarketCheckLog): number => {
@@ -212,7 +246,7 @@ export function StatusDashboard({
       </div>
 
       {/* Main Status Cards */}
-      {!log ? (
+      {!activeLog ? (
         <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-8 text-center">
           <Database className="w-10 h-10 text-slate-600 mx-auto mb-3" />
           <h3 className="text-base font-semibold text-slate-300">
@@ -227,14 +261,56 @@ export function StatusDashboard({
           </p>
         </div>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-4">
+          {/* Selettore Simbolo per Dettaglio Ultimo Esito & Telemetria */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-2.5 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <span className="text-xs text-slate-400 font-medium flex items-center gap-1.5">
+                <TrendingUp className="w-3.5 h-3.5 text-blue-400" />
+                Dettaglio Ultimo Esito per Simbolo:
+              </span>
+              <div className="flex items-center rounded-lg bg-slate-950/80 p-0.5 border border-slate-800">
+                {availableSymbols.map((sym) => (
+                  <button
+                    key={sym}
+                    type="button"
+                    onClick={() => setSelectedOverviewSymbol(sym)}
+                    className={`px-3 py-1 rounded-md text-xs font-mono font-semibold transition-all cursor-pointer ${
+                      selectedOverviewSymbol === sym
+                        ? "bg-blue-600 text-white shadow-sm ring-1 ring-blue-400/30"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    {sym}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="text-[11px] text-slate-500 font-mono">
+              Visualizzando telemetria di:{" "}
+              <strong className="text-slate-200 font-semibold">
+                {activeLog.symbol || selectedOverviewSymbol}
+              </strong>
+              {activeLog.timestamp && (
+                <span className="ml-2 text-slate-400">
+                  (
+                  <span suppressHydrationWarning>
+                    {mounted ? getTimeAgo(activeLog.timestamp) : formatDateTime(activeLog.timestamp)}
+                  </span>
+                  )
+                </span>
+              )}
+            </div>
+          </div>
+
           {/* Top Metric Cards Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Card 1: Orario Ultimo Controllo */}
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-medium uppercase tracking-wider">
-                  Ultimo Controllo
+                  Ultimo Controllo ({activeLog.symbol || selectedOverviewSymbol})
                 </span>
                 <Clock className="w-4 h-4 text-blue-400" />
               </div>
@@ -243,17 +319,16 @@ export function StatusDashboard({
                   suppressHydrationWarning
                   className="text-base font-bold text-white font-mono"
                 >
-                  {mounted ? getTimeAgo(log.timestamp) : formatDateTime(log.timestamp)}
+                  {mounted ? getTimeAgo(activeLog.timestamp) : formatDateTime(activeLog.timestamp)}
                 </div>
                 <div
                   suppressHydrationWarning
                   className="text-[11px] text-slate-400 mt-0.5"
                 >
-                  {formatDateTime(log.timestamp)}
+                  {formatDateTime(activeLog.timestamp)}
                 </div>
               </div>
             </div>
-
 
             {/* Card 2: Stato Mercato */}
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
@@ -261,7 +336,7 @@ export function StatusDashboard({
                 <span className="text-xs font-medium uppercase tracking-wider">
                   Stato Mercato
                 </span>
-                {log.marketOpen ? (
+                {activeLog.marketOpen ? (
                   <Activity className="w-4 h-4 text-emerald-400 animate-pulse" />
                 ) : (
                   <Moon className="w-4 h-4 text-amber-400" />
@@ -270,18 +345,18 @@ export function StatusDashboard({
               <div>
                 <div
                   className={`text-base font-bold flex items-center gap-1.5 ${
-                    log.marketOpen ? "text-emerald-400" : "text-amber-400"
+                    activeLog.marketOpen ? "text-emerald-400" : "text-amber-400"
                   }`}
                 >
                   <span
                     className={`w-2 h-2 rounded-full ${
-                      log.marketOpen ? "bg-emerald-400" : "bg-amber-400"
+                      activeLog.marketOpen ? "bg-emerald-400" : "bg-amber-400"
                     }`}
                   />
-                  {log.marketOpen ? "Aperto (24h)" : "Chiuso"}
+                  {activeLog.marketOpen ? "Aperto (24h)" : "Chiuso"}
                 </div>
                 <div className="text-[11px] text-slate-400 mt-0.5 truncate">
-                  XAU/USD Forex Session
+                  {activeLog.symbol || selectedOverviewSymbol} Session
                 </div>
               </div>
             </div>
@@ -296,7 +371,7 @@ export function StatusDashboard({
               </div>
               <div>
                 <div className="text-base font-bold text-white flex items-center gap-2 font-mono">
-                  <span>{log.consecutiveSignalCount} / 3</span>
+                  <span>{activeLog.consecutiveSignalCount} / 3</span>
                   <span className="text-xs font-normal text-slate-400">
                     controlli
                   </span>
@@ -305,15 +380,15 @@ export function StatusDashboard({
                 <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                   <div
                     className={`h-full transition-all duration-500 ${
-                      log.consecutiveSignalCount >= 3
+                      activeLog.consecutiveSignalCount >= 3
                         ? "bg-emerald-500"
-                        : log.consecutiveSignalCount > 0
+                        : activeLog.consecutiveSignalCount > 0
                         ? "bg-blue-500"
                         : "bg-slate-700"
                     }`}
                     style={{
                       width: `${Math.min(
-                        (log.consecutiveSignalCount / 3) * 100,
+                        (activeLog.consecutiveSignalCount / 3) * 100,
                         100
                       )}%`,
                     }}
@@ -333,10 +408,10 @@ export function StatusDashboard({
               <div>
                 <div
                   className={`text-base font-bold flex items-center gap-1.5 ${
-                    log.alertSent ? "text-emerald-400" : "text-slate-300"
+                    activeLog.alertSent ? "text-emerald-400" : "text-slate-300"
                   }`}
                 >
-                  {log.alertSent ? (
+                  {activeLog.alertSent ? (
                     <>
                       <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                       Inviato
@@ -357,7 +432,7 @@ export function StatusDashboard({
             <div className="flex items-center justify-between flex-wrap gap-2">
               <h2 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
                 <Info className="w-4 h-4 text-blue-400" />
-                Dettaglio Ultimo Esito
+                Dettaglio Ultimo Esito ({activeLog.symbol || selectedOverviewSymbol})
               </h2>
               <div className="flex items-center gap-2 flex-wrap">
                 {/* Badge Condizioni Sempre Visibile */}
@@ -365,74 +440,102 @@ export function StatusDashboard({
                   Condizioni:{" "}
                   <span
                     className={`font-bold ${
-                      getCondizioniCount(log) >= 2
+                      getCondizioniCount(activeLog) >= 2
                         ? "text-purple-400"
-                        : getCondizioniCount(log) === 1
+                        : getCondizioniCount(activeLog) === 1
                         ? "text-blue-400"
                         : "text-slate-400"
                     }`}
                   >
-                    {getCondizioniCount(log)}/3
+                    {getCondizioniCount(activeLog)}/3
                   </span>
                 </div>
-                {log.currentPrice && (
-                  <div className="text-xs text-slate-400 font-mono bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700">
-                    Prezzo XAU/USD:{" "}
-                    <span className="text-emerald-400 font-semibold">
-                      ${log.currentPrice.toFixed(2)}
+
+                {/* Badge Conferma Trend 1H se presente */}
+                {activeLog.confermaTrend && (
+                  <div className="text-xs text-slate-400 font-mono bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700 flex items-center gap-1.5">
+                    Trend 1H:{" "}
+                    <span
+                      className={`font-semibold capitalize ${
+                        activeLog.confermaTrend === "concorde"
+                          ? "text-emerald-400"
+                          : activeLog.confermaTrend === "discorde"
+                          ? "text-amber-400"
+                          : "text-slate-300"
+                      }`}
+                    >
+                      {activeLog.confermaTrend}
+                      {activeLog.trend1h ? ` (${activeLog.trend1h})` : ""}
                     </span>
                   </div>
                 )}
+
+                {activeLog.currentPrice !== undefined && activeLog.currentPrice !== null && (() => {
+                  const isForex = activeLog.symbol
+                    ? activeLog.symbol.toUpperCase().includes("EUR") || activeLog.currentPrice < 20
+                    : activeLog.currentPrice < 20;
+                  const pricePrefix = isForex ? "" : "$";
+                  const decimals = isForex ? 4 : 2;
+
+                  return (
+                    <div className="text-xs text-slate-400 font-mono bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700">
+                      Prezzo {activeLog.symbol || selectedOverviewSymbol}:{" "}
+                      <span className="text-emerald-400 font-semibold">
+                        {pricePrefix}{activeLog.currentPrice.toFixed(decimals)}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
             {/* Main Outcome Message Box */}
             <div
               className={`p-4 rounded-lg border text-sm flex items-start gap-3 ${
-                log.alertSent
+                activeLog.alertSent
                   ? "bg-emerald-950/30 border-emerald-500/30 text-emerald-200"
-                  : log.signalDetected
+                  : activeLog.signalDetected
                   ? "bg-blue-950/30 border-blue-500/30 text-blue-200"
                   : "bg-slate-800/40 border-slate-700/60 text-slate-300"
               }`}
             >
-              {log.alertSent ? (
+              {activeLog.alertSent ? (
                 <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-              ) : log.signalDetected ? (
+              ) : activeLog.signalDetected ? (
                 <AlertTriangle className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
               ) : (
                 <ShieldCheck className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
               )}
               <div className="space-y-2 flex-1">
-                <div className="font-semibold text-white">{log.message}</div>
+                <div className="font-semibold text-white">{activeLog.message}</div>
 
                 {/* Sezione Condizioni Sempre Visibile per ogni check */}
                 <div className="pt-2 text-xs space-y-1 text-slate-300 border-t border-slate-700/40">
                   <div className="flex items-center justify-between font-medium">
                     <span className="text-slate-400">
-                      Condizioni Tecniche Rilevate ({getCondizioniCount(log)}/3 richieste):
+                      Condizioni Tecniche Rilevate ({getCondizioniCount(activeLog)}/3 richieste):
                     </span>
                     <span
                       className={`px-2 py-0.5 rounded font-mono font-bold text-[11px] ${
-                        getCondizioniCount(log) >= 2
+                        getCondizioniCount(activeLog) >= 2
                           ? "bg-purple-950/70 text-purple-300 border border-purple-700/60"
-                          : getCondizioniCount(log) === 1
+                          : getCondizioniCount(activeLog) === 1
                           ? "bg-blue-950/60 text-blue-300 border border-blue-800/50"
                           : "bg-slate-800 text-slate-400 border border-slate-700"
                       }`}
                     >
-                      {getCondizioniCount(log)} / 3
+                      {getCondizioniCount(activeLog)} / 3
                     </span>
                   </div>
-                  {log.motivi && log.motivi.length > 0 ? (
+                  {activeLog.motivi && activeLog.motivi.length > 0 ? (
                     <ul className="list-disc list-inside space-y-0.5 pl-1 pt-1">
-                      {log.motivi.map((m, idx) => (
+                      {activeLog.motivi.map((m, idx) => (
                         <li key={idx}>{m}</li>
                       ))}
                     </ul>
                   ) : (
                     <p className="text-[11px] text-slate-400 italic pt-0.5">
-                      {log.marketOpen
+                      {activeLog.marketOpen
                         ? "Nessuna condizione tecnica di breakout/momentum soddisfatta (soglia minima: ≥ 2/3)."
                         : "Controllo non eseguito (mercato chiuso)."}
                     </p>
@@ -441,24 +544,29 @@ export function StatusDashboard({
               </div>
             </div>
 
-
             {/* Technical Indicators Row for Last Check */}
-            {(log.rsi !== undefined || log.atr !== undefined) && (() => {
+            {(activeLog.rsi !== undefined || activeLog.atr !== undefined) && (() => {
+              const isForex = activeLog.symbol
+                ? activeLog.symbol.toUpperCase().includes("EUR") || (activeLog.currentPrice ?? 0) < 20
+                : (activeLog.currentPrice ?? 0) < 20;
+              const pricePrefix = isForex ? "" : "$";
+              const atrDecimals = isForex ? 5 : 2;
+
               const isLogAtrExpanded =
-                typeof log.atr === "number" &&
-                typeof log.atrAvg === "number" &&
-                log.atrAvg > 0 &&
-                log.atr >= log.atrAvg * 1.2;
+                typeof activeLog.atr === "number" &&
+                typeof activeLog.atrAvg === "number" &&
+                activeLog.atrAvg > 0 &&
+                activeLog.atr >= activeLog.atrAvg * 1.2;
               const logAtrPct =
-                typeof log.atr === "number" &&
-                typeof log.atrAvg === "number" &&
-                log.atrAvg > 0
-                  ? Number(((log.atr / log.atrAvg - 1) * 100).toFixed(0))
+                typeof activeLog.atr === "number" &&
+                typeof activeLog.atrAvg === "number" &&
+                activeLog.atrAvg > 0
+                  ? Number(((activeLog.atr / activeLog.atrAvg - 1) * 100).toFixed(0))
                   : null;
 
-              const hasLogRsi = typeof log.rsi === "number" && !isNaN(log.rsi);
+              const hasLogRsi = typeof activeLog.rsi === "number" && !isNaN(activeLog.rsi);
               const isLogRsiTriggered =
-                hasLogRsi && (log.rsi! >= 60 || log.rsi! <= 40);
+                hasLogRsi && (activeLog.rsi! >= 60 || activeLog.rsi! <= 40);
 
               return (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
@@ -466,7 +574,7 @@ export function StatusDashboard({
                   <div
                     className={`rounded-lg p-3 border transition-colors ${
                       isLogRsiTriggered
-                        ? log.rsi! >= 60
+                        ? activeLog.rsi! >= 60
                           ? "bg-emerald-950/20 border-emerald-500/40"
                           : "bg-rose-950/20 border-rose-500/40"
                         : "bg-slate-950/60 border-slate-800/80"
@@ -477,12 +585,12 @@ export function StatusDashboard({
                       {isLogRsiTriggered ? (
                         <span
                           className={`text-[10px] font-bold px-1.5 py-0.2 rounded border font-sans ${
-                            log.rsi! >= 60
+                            activeLog.rsi! >= 60
                               ? "bg-emerald-950 text-emerald-300 border-emerald-600/50"
                               : "bg-rose-950 text-rose-300 border-rose-600/50"
                           }`}
                         >
-                          {log.rsi! >= 60 ? "Ipercomprato" : "Ipervenduto"}
+                          {activeLog.rsi! >= 60 ? "Ipercomprato" : "Ipervenduto"}
                         </span>
                       ) : (
                         <span className="text-[10px] text-slate-500">
@@ -493,15 +601,15 @@ export function StatusDashboard({
                     <div
                       className={`text-sm font-bold font-mono mt-0.5 ${
                         hasLogRsi
-                          ? log.rsi! >= 60
+                          ? activeLog.rsi! >= 60
                             ? "text-emerald-300"
-                            : log.rsi! <= 40
+                            : activeLog.rsi! <= 40
                             ? "text-rose-300"
                             : "text-white"
                           : "text-slate-500"
                       }`}
                     >
-                      {hasLogRsi ? log.rsi!.toFixed(2) : "-"}
+                      {hasLogRsi ? activeLog.rsi!.toFixed(2) : "-"}
                     </div>
                   </div>
 
@@ -531,7 +639,9 @@ export function StatusDashboard({
                         isLogAtrExpanded ? "text-purple-300" : "text-white"
                       }`}
                     >
-                      {typeof log.atr === "number" ? `$${log.atr.toFixed(2)}` : "-"}
+                      {typeof activeLog.atr === "number"
+                        ? `${pricePrefix}${activeLog.atr.toFixed(atrDecimals)}`
+                        : "-"}
                     </div>
                   </div>
 
@@ -539,15 +649,15 @@ export function StatusDashboard({
                   <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
                     <div className="flex items-center justify-between text-[11px] text-slate-400">
                       <span>ATR Media (20p)</span>
-                      {typeof log.atrAvg === "number" && (
+                      {typeof activeLog.atrAvg === "number" && (
                         <span className="text-[10px] text-slate-500 font-mono">
-                          Target: ${(log.atrAvg * 1.2).toFixed(2)}
+                          Target: {pricePrefix}{(activeLog.atrAvg * 1.2).toFixed(atrDecimals)}
                         </span>
                       )}
                     </div>
                     <div className="text-sm font-bold font-mono text-white mt-0.5">
-                      {typeof log.atrAvg === "number"
-                        ? `$${log.atrAvg.toFixed(2)}`
+                      {typeof activeLog.atrAvg === "number"
+                        ? `${pricePrefix}${activeLog.atrAvg.toFixed(atrDecimals)}`
                         : "-"}
                     </div>
                   </div>
@@ -555,17 +665,17 @@ export function StatusDashboard({
                   {/* 4. Rottura Livello */}
                   <div
                     className={`rounded-lg p-3 border transition-colors ${
-                      log.breakoutDetected
+                      activeLog.breakoutDetected
                         ? "bg-purple-950/20 border-purple-500/40"
                         : "bg-slate-950/60 border-slate-800/80"
                     }`}
                   >
                     <div className="text-[11px] text-slate-400">Rottura Livello</div>
                     <div className="text-sm font-bold text-white mt-0.5 flex items-center gap-1.5">
-                      {log.breakoutDetected ? (
+                      {activeLog.breakoutDetected ? (
                         <span className="text-purple-300 inline-flex items-center gap-1">
                           <Check className="w-3.5 h-3.5 text-purple-400" />
-                          {log.breakoutType ? log.breakoutType.toUpperCase() : "Sì"}
+                          {activeLog.breakoutType ? activeLog.breakoutType.toUpperCase() : "Sì"}
                         </span>
                       ) : (
                         <span className="text-slate-500 inline-flex items-center gap-1">
@@ -579,13 +689,12 @@ export function StatusDashboard({
               );
             })()}
 
-
             {/* Technical Metadata */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs text-slate-400 border-t border-slate-800/60">
               <div>
                 <span className="text-slate-500">Metodo Autenticazione:</span>{" "}
                 <span className="text-slate-300 font-mono">
-                  {log.authType?.toUpperCase() || "CRON_SECRET / QSTASH"}
+                  {activeLog.authType?.toUpperCase() || "CRON_SECRET / QSTASH"}
                 </span>
               </div>
               <div>
@@ -659,10 +768,28 @@ export function StatusDashboard({
               Filtri:
             </span>
 
+            {/* Symbol Filter Selector */}
+            <div className="flex items-center rounded-lg bg-slate-900 p-0.5 border border-slate-800">
+              {["ALL", "XAU/USD", "EUR/USD"].map((sym) => (
+                <button
+                  key={sym}
+                  type="button"
+                  onClick={() => setSelectedSymbolFilter(sym)}
+                  className={`px-2.5 py-1 rounded text-xs font-mono font-semibold transition-all cursor-pointer ${
+                    selectedSymbolFilter === sym
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {sym === "ALL" ? "Tutti i Simboli" : sym}
+                </button>
+              ))}
+            </div>
+
             {/* Quick Filter: Solo Mercato Aperto */}
             <button
               onClick={() => setOnlyMarketOpen((prev) => !prev)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                 onlyMarketOpen
                   ? "bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-400/30"
                   : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
@@ -680,7 +807,7 @@ export function StatusDashboard({
             {/* Filter: Solo Segnali Rilevati */}
             <button
               onClick={() => setOnlySignals((prev) => !prev)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                 onlySignals
                   ? "bg-purple-600 text-white shadow-sm ring-2 ring-purple-400/30"
                   : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
@@ -728,7 +855,7 @@ export function StatusDashboard({
               <thead className="bg-slate-950/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
                 <tr>
                   <th scope="col" className="px-3.5 py-3">
-                    Orario
+                    Simbolo & Orario
                   </th>
                   <th scope="col" className="px-3 py-3">
                     Mercato
@@ -789,17 +916,22 @@ export function StatusDashboard({
                           : ""
                       }`}
                     >
-                      {/* 1. Orario */}
+                      {/* 1. Simbolo & Orario */}
                       <td className="px-3.5 py-2.5 whitespace-nowrap">
-                        <div
-                          suppressHydrationWarning
-                          className="font-mono font-medium text-slate-200"
-                        >
-                          {formatTimeOnly(item.timestamp)}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 border border-slate-700 text-slate-300 font-mono font-semibold">
+                            {item.symbol || "XAU/USD"}
+                          </span>
+                          <span
+                            suppressHydrationWarning
+                            className="font-mono font-medium text-slate-200"
+                          >
+                            {formatTimeOnly(item.timestamp)}
+                          </span>
                         </div>
                         <div
                           suppressHydrationWarning
-                          className="text-[10px] text-slate-500 flex items-center gap-1 font-mono"
+                          className="text-[10px] text-slate-500 flex items-center gap-1 font-mono mt-0.5"
                         >
                           <span suppressHydrationWarning>
                             {mounted ? getTimeAgo(item.timestamp) : ""}
