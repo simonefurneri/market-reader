@@ -39,6 +39,7 @@ export function StatusDashboard({
   const [log, setLog] = useState<MarketCheckLog | null>(initialLog);
   const [history, setHistory] = useState<MarketCheckLog[]>(initialHistory);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [countdown, setCountdown] = useState<number>(
     STATUS_REFRESH_INTERVAL_SECONDS
   );
@@ -48,6 +49,10 @@ export function StatusDashboard({
   const [onlyMarketOpen, setOnlyMarketOpen] = useState(false);
   const [onlySignals, setOnlySignals] = useState(false);
   const [displayLimit, setDisplayLimit] = useState<number>(50);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const fetchLatestLog = useCallback(async () => {
     setIsRefreshing(true);
@@ -196,6 +201,7 @@ export function StatusDashboard({
         <button
           onClick={handleManualRefresh}
           disabled={isRefreshing}
+          suppressHydrationWarning
           className="self-start sm:self-auto inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition-all active:scale-95 font-mono"
         >
           <RefreshCw
@@ -233,14 +239,21 @@ export function StatusDashboard({
                 <Clock className="w-4 h-4 text-blue-400" />
               </div>
               <div>
-                <div className="text-base font-bold text-white font-mono">
-                  {getTimeAgo(log.timestamp)}
+                <div
+                  suppressHydrationWarning
+                  className="text-base font-bold text-white font-mono"
+                >
+                  {mounted ? getTimeAgo(log.timestamp) : formatDateTime(log.timestamp)}
                 </div>
-                <div className="text-[11px] text-slate-400 mt-0.5">
+                <div
+                  suppressHydrationWarning
+                  className="text-[11px] text-slate-400 mt-0.5"
+                >
                   {formatDateTime(log.timestamp)}
                 </div>
               </div>
             </div>
+
 
             {/* Card 2: Stato Mercato */}
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
@@ -778,13 +791,21 @@ export function StatusDashboard({
                     >
                       {/* 1. Orario */}
                       <td className="px-3.5 py-2.5 whitespace-nowrap">
-                        <div className="font-mono font-medium text-slate-200">
+                        <div
+                          suppressHydrationWarning
+                          className="font-mono font-medium text-slate-200"
+                        >
                           {formatTimeOnly(item.timestamp)}
                         </div>
-                        <div className="text-[10px] text-slate-500 flex items-center gap-1 font-mono">
-                          <span>{getTimeAgo(item.timestamp)}</span>
-                          <span>•</span>
-                          <span>
+                        <div
+                          suppressHydrationWarning
+                          className="text-[10px] text-slate-500 flex items-center gap-1 font-mono"
+                        >
+                          <span suppressHydrationWarning>
+                            {mounted ? getTimeAgo(item.timestamp) : ""}
+                          </span>
+                          {mounted && <span>•</span>}
+                          <span suppressHydrationWarning>
                             {new Date(item.timestamp).toLocaleDateString("it-IT", {
                               day: "2-digit",
                               month: "2-digit",

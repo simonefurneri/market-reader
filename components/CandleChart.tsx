@@ -269,13 +269,14 @@ export function CandleChart({
             type="button"
             onClick={handleManualRefresh}
             disabled={loading || refreshing}
+            suppressHydrationWarning
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors disabled:opacity-50"
             title="Aggiorna candele ora"
           >
             <RefreshCw
               className={`w-3.5 h-3.5 ${refreshing ? "animate-spin text-blue-400" : ""}`}
             />
-            <span className="hidden sm:inline font-mono">
+            <span suppressHydrationWarning className="hidden sm:inline font-mono">
               {refreshing ? "Aggiornamento..." : `Aggiorna (${countdown}s)`}
             </span>
           </button>
