@@ -713,7 +713,7 @@ export function StatusDashboard({
       )}
 
       {/* ========================================================================= */}
-      {/* SEZIONE TABELLA STORICO DEI CONTROLLI (REDIS checkHistory - max 288)      */}
+      {/* SEZIONE TABELLA STORICO DEI CONTROLLI (REDIS checkHistory - max 576)      */}
       {/* ========================================================================= */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 sm:p-6 space-y-5">
         {/* Table Header with Title & Stats */}
@@ -728,7 +728,7 @@ export function StatusDashboard({
               <code className="px-1 py-0.5 bg-slate-800 rounded text-slate-300 font-mono">
                 checkHistory
               </code>
-              , max 288 voci).
+              , max 576 voci).
             </p>
           </div>
 
@@ -831,7 +831,8 @@ export function StatusDashboard({
               <option value={20}>Ultimi 20</option>
               <option value={50}>Ultimi 50</option>
               <option value={100}>Ultimi 100</option>
-              <option value={288}>Tutti (288)</option>
+              <option value={288}>Ultimi 288 (12h)</option>
+              <option value={576}>Tutti (576 - 24h)</option>
             </select>
           </div>
         </div>
@@ -1129,7 +1130,7 @@ export function StatusDashboard({
             memorizzati (fino a 24 ore di campionamento a intervalli di 5 min).
           </div>
           <div className="font-mono text-[11px] text-slate-400">
-            LTRIM Redis: 288 elementi
+            LTRIM Redis: 576 elementi
           </div>
         </div>
       </div>

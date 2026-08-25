@@ -270,7 +270,7 @@ const inMemoryLastCheckMap = new Map<string, MarketCheckLog>();
 /**
  * Salva i log dettagliati dell'ultimo controllo di mercato per una lista di simboli su Redis
  * nella chiave unificata "lastCheckLog" (mappa con simbolo -> log, TTL 24h) e aggiunge
- * ciascuna entry alla lista "checkHistory" (massimo 288 elementi).
+ * ciascuna entry alla lista "checkHistory" (massimo 576 elementi: 24h per 2 simboli a intervalli di 5 min).
  */
 export async function saveLastCheckLogs(logs: MarketCheckLog[]): Promise<void> {
   if (!logs || logs.length === 0) return;
@@ -282,8 +282,8 @@ export async function saveLastCheckLogs(logs: MarketCheckLog[]): Promise<void> {
     inMemoryLastCheckMap.set(norm, log);
     inMemoryCheckHistory.unshift(log);
   }
-  if (inMemoryCheckHistory.length > 288) {
-    inMemoryCheckHistory = inMemoryCheckHistory.slice(0, 288);
+  if (inMemoryCheckHistory.length > 576) {
+    inMemoryCheckHistory = inMemoryCheckHistory.slice(0, 576);
   }
 
   if (!redis) return;
@@ -311,7 +311,7 @@ export async function saveLastCheckLogs(logs: MarketCheckLog[]): Promise<void> {
     const operations: Promise<unknown>[] = [
       redis.set(KV_KEY_LAST_CHECK_LOG, map, { ex: 86400 }),
       ...logs.map((log) => redis.lpush(KV_KEY_CHECK_HISTORY, log)),
-      redis.ltrim(KV_KEY_CHECK_HISTORY, 0, 287),
+      redis.ltrim(KV_KEY_CHECK_HISTORY, 0, 575),
     ];
 
     // Pulizia proattiva di eventuali vecchie chiavi ridondanti
@@ -377,10 +377,10 @@ export async function getLastCheckLog(symbol: string = "XAU/USD"): Promise<Marke
 
 /**
  * Recupera lo storico dei controlli di mercato dalla lista Redis "checkHistory",
- * ordinati dal più recente al più vecchio (fino a un massimo di `limit` elementi, default 288).
+ * ordinati dal più recente al più vecchio (fino a un massimo di `limit` elementi, default 576).
  */
 export async function getCheckHistory(
-  limit: number = 288
+  limit: number = 576
 ): Promise<MarketCheckLog[]> {
   const redis = getRedisClient();
 

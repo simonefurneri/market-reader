@@ -8,7 +8,7 @@ export async function GET() {
     const [log, logs, history] = await Promise.all([
       getLastCheckLog(),
       getLastCheckLogs(),
-      getCheckHistory(288),
+      getCheckHistory(576),
     ]);
     return NextResponse.json({ success: true, log, logs, history });
   } catch (err) {

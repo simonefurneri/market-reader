@@ -7,7 +7,7 @@ export default async function StatusPage() {
   const [lastCheckLog, lastCheckLogs, checkHistory] = await Promise.all([
     getLastCheckLog(),
     getLastCheckLogs(),
-    getCheckHistory(288),
+    getCheckHistory(576),
   ]);
 
   return (
