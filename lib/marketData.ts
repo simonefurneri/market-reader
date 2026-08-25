@@ -11,13 +11,14 @@ import {
  * in un timestamp UNIX in secondi (UTCTimestamp richiesto da TradingView lightweight-charts).
  */
 function parseTwelveDataTimestamp(datetimeStr: string): number {
-  const isoStr = datetimeStr.includes("T")
-    ? datetimeStr
-    : datetimeStr.replace(" ", "T") + "Z";
+  const cleanStr = datetimeStr.trim();
+  const isoStr = cleanStr.includes("T")
+    ? (cleanStr.endsWith("Z") ? cleanStr : cleanStr + "Z")
+    : cleanStr.replace(" ", "T") + "Z";
   const timestampMs = Date.parse(isoStr);
 
   if (isNaN(timestampMs)) {
-    const [datePart, timePart = "00:00:00"] = datetimeStr.split(" ");
+    const [datePart, timePart = "00:00:00"] = cleanStr.split(" ");
     const [year, month, day] = datePart.split("-").map(Number);
     const [hours, minutes, seconds] = timePart.split(":").map(Number);
     return Math.floor(
@@ -68,6 +69,7 @@ export async function fetchTwelveDataCandles(
   endpoint.searchParams.set("symbol", symbol);
   endpoint.searchParams.set("interval", interval);
   endpoint.searchParams.set("outputsize", outputsize.toString());
+  endpoint.searchParams.set("timezone", "UTC");
   endpoint.searchParams.set("apikey", apiKey.trim());
 
   let response: Response;
@@ -166,15 +168,21 @@ export interface FetchCandlesWithCacheOptions {
   apiKey?: string;
 }
 
+export interface FetchCandlesWithCacheResult {
+  candles: CandleData[];
+  source: "cache" | "live";
+  fetchedAt: number;
+}
+
 /**
- * Recupera le candele con gestione cache Redis:
- * - Se `forceRefresh` è false: cerca in cache Redis. Se presente, restituisce i dati memorizzati.
+ * Recupera le candele con gestione cache Redis e restituisce i dettagli di provenienza:
+ * - Se `forceRefresh` è false: cerca in cache Redis. Se presente, restituisce i dati memorizzati con source "cache".
  * - Se cache miss o se `forceRefresh` è true: contatta Twelve Data, aggiorna la cache Redis con il TTL specifico
- *   (4 min per 15M, 18 min per 1H) e restituisce i dati freschi.
+ *   (4 min per 15M, 18 min per 1H) e restituisce i dati freschi con source "live".
  */
-export async function fetchCandlesWithCache(
+export async function fetchCandlesWithCacheDetails(
   options: FetchCandlesWithCacheOptions = {}
-): Promise<CandleData[]> {
+): Promise<FetchCandlesWithCacheResult> {
   const {
     symbol = "XAU/USD",
     timeframe = "15M",
@@ -187,14 +195,19 @@ export async function fetchCandlesWithCache(
 
   // 1. Se non è richiesto il bypass della cache, prova a leggere da Redis
   if (!forceRefresh) {
-    const cachedCandles = await getCachedCandles(symbol, normTf);
-    if (cachedCandles && Array.isArray(cachedCandles) && cachedCandles.length > 0) {
-      return cachedCandles;
+    const cachedData = await getCachedCandles(symbol, normTf);
+    if (cachedData && Array.isArray(cachedData.candles) && cachedData.candles.length > 0) {
+      return {
+        candles: cachedData.candles,
+        source: "cache",
+        fetchedAt: cachedData.fetchedAt,
+      };
     }
   }
 
   // 2. Cache miss oppure forceRefresh richiesto -> Chiama Twelve Data
   const interval = toTwelveDataInterval(normTf);
+  const now = Date.now();
   const freshCandles = await fetchTwelveDataCandles({
     symbol,
     interval,
@@ -202,11 +215,26 @@ export async function fetchCandlesWithCache(
     apiKey,
   });
 
-  // 3. Salva in cache con il TTL corrispondente (15M -> 240s, 1H -> 1080s)
+  // 3. Salva in cache con il TTL corrispondente (15M -> 240s, 1H -> 1080s) e timestamp di fetch
   const ttl = getTimeframeTtlSeconds(normTf);
-  await setCachedCandles(symbol, normTf, freshCandles, ttl);
+  await setCachedCandles(symbol, normTf, freshCandles, ttl, now);
 
-  return freshCandles;
+  return {
+    candles: freshCandles,
+    source: "live",
+    fetchedAt: now,
+  };
+}
+
+/**
+ * Recupera le candele con gestione cache Redis:
+ * Restituisce l'array di candele (compatibile con i servizi interni).
+ */
+export async function fetchCandlesWithCache(
+  options: FetchCandlesWithCacheOptions = {}
+): Promise<CandleData[]> {
+  const result = await fetchCandlesWithCacheDetails(options);
+  return result.candles;
 }
 
 /**
@@ -245,14 +273,20 @@ export interface FetchMarketDataOptions {
   forceRefresh?: boolean;
 }
 
+export interface MarketDataResponse {
+  candles: CandleData[];
+  source: "cache" | "live";
+  fetchedAt: number;
+}
+
 /**
  * Funzione client/server unificata per il recupero dati di mercato.
  * Nel browser contatta l'endpoint API locale /api/market-data per non esporre la chiave,
- * sul server chiama direttamente fetchCandlesWithCache().
+ * sul server chiama direttamente fetchCandlesWithCacheDetails().
  */
 export async function fetchMarketData(
   options: FetchMarketDataOptions = {}
-): Promise<CandleData[]> {
+): Promise<MarketDataResponse> {
   const {
     symbol = "XAU/USD",
     timeframe = "15M",
@@ -272,13 +306,22 @@ export async function fetchMarketData(
     if (!res.ok || !json.success) {
       throw new Error(json.error || `Errore HTTP ${res.status}`);
     }
-    return json.data as CandleData[];
+    return {
+      candles: json.data as CandleData[],
+      source: (json.source as "cache" | "live") || "live",
+      fetchedAt: typeof json.fetchedAt === "number" ? json.fetchedAt : Date.now(),
+    };
   }
 
-  return fetchCandlesWithCache({
+  const result = await fetchCandlesWithCacheDetails({
     symbol,
     timeframe,
     forceRefresh,
   });
+  return {
+    candles: result.candles,
+    source: result.source,
+    fetchedAt: result.fetchedAt,
+  };
 }
 

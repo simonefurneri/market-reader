@@ -9,6 +9,8 @@ import {
   CandlestickSeries,
   CandlestickData,
   UTCTimestamp,
+  TickMarkType,
+  Time,
 } from "lightweight-charts";
 import { fetchMarketData } from "@/lib/marketData";
 import { CandleData } from "@/lib/types";
@@ -40,6 +42,7 @@ export function CandleChart({
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [dataSource, setDataSource] = useState<"cache" | "live" | null>(null);
   const [currentCandle, setCurrentCandle] = useState<CandleData | null>(null);
   const [countdown, setCountdown] = useState<number>(autoRefreshIntervalSeconds);
   const [priceChange, setPriceChange] = useState<{
@@ -57,11 +60,17 @@ export function CandleChart({
         }
         setError(null);
 
-        const rawCandles = await fetchMarketData({
+        const response = await fetchMarketData({
           symbol: symbolName,
           timeframe: intervalName,
           forceRefresh,
         });
+
+        const rawCandles = response.candles;
+        setDataSource(response.source);
+        if (response.fetchedAt) {
+          setLastUpdated(new Date(response.fetchedAt));
+        }
 
         if (rawCandles.length > 0) {
           const last = rawCandles[rawCandles.length - 1];
@@ -86,7 +95,6 @@ export function CandleChart({
           }
         }
 
-        setLastUpdated(new Date());
         setCountdown(autoRefreshIntervalSeconds);
       } catch (err) {
         const message =
@@ -109,11 +117,24 @@ export function CandleChart({
   }, [autoRefreshIntervalSeconds, loadData]);
 
 
-  // Inizializzazione grafico Lightweight Charts con tema scuro e responsive
+  // Inizializzazione grafico Lightweight Charts con tema scuro, responsive e fuso orario italiano
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
     const container = chartContainerRef.current;
+
+    const parseChartTimeToDate = (time: Time): Date | null => {
+      if (typeof time === "number") {
+        return new Date(time * 1000);
+      }
+      if (typeof time === "string") {
+        return new Date(time);
+      }
+      if (typeof time === "object" && time !== null && "year" in time) {
+        return new Date(Date.UTC(time.year, time.month - 1, time.day));
+      }
+      return null;
+    };
 
     const chart = createChart(container, {
       layout: {
@@ -121,6 +142,23 @@ export function CandleChart({
         textColor: "#94a3b8", // slate-400
         fontSize: 12,
         fontFamily: "Inter, system-ui, sans-serif",
+      },
+      localization: {
+        locale: "it-IT",
+        dateFormat: "dd/MM/yyyy",
+        timeFormatter: (time: Time) => {
+          const date = parseChartTimeToDate(time);
+          if (!date) return "";
+          return date.toLocaleString("it-IT", {
+            timeZone: "Europe/Rome",
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          });
+        },
       },
       grid: {
         vertLines: { color: "#1e293b" }, // slate-800
@@ -152,6 +190,51 @@ export function CandleChart({
         borderColor: "#334155",
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: (time: Time, tickMarkType: TickMarkType) => {
+          const date = parseChartTimeToDate(time);
+          if (!date) return null;
+
+          switch (tickMarkType) {
+            case TickMarkType.Year:
+              return date.toLocaleDateString("it-IT", {
+                timeZone: "Europe/Rome",
+                year: "numeric",
+              });
+            case TickMarkType.Month:
+              return date.toLocaleDateString("it-IT", {
+                timeZone: "Europe/Rome",
+                month: "short",
+              });
+            case TickMarkType.DayOfMonth:
+              return date.toLocaleDateString("it-IT", {
+                timeZone: "Europe/Rome",
+                day: "numeric",
+                month: "short",
+              });
+            case TickMarkType.Time:
+              return date.toLocaleTimeString("it-IT", {
+                timeZone: "Europe/Rome",
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              });
+            case TickMarkType.TimeWithSeconds:
+              return date.toLocaleTimeString("it-IT", {
+                timeZone: "Europe/Rome",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hour12: false,
+              });
+            default:
+              return date.toLocaleTimeString("it-IT", {
+                timeZone: "Europe/Rome",
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              });
+          }
+        },
       },
       handleScroll: true,
       handleScale: true,
@@ -212,7 +295,7 @@ export function CandleChart({
 
   return (
     <div className="flex-1 flex flex-col w-full h-full min-h-[460px] relative">
-      {/* Top Meta Header: Simbolo, Prezzo attuale, Variazione e Status */}
+      {/* Top Meta Header: Simbolo, Prezzo attuale, Variazione, Badge Cache/Live e Status */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-800">
         <div className="flex items-center gap-3">
           <div>
@@ -223,6 +306,24 @@ export function CandleChart({
               <span className="text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-mono font-medium">
                 {intervalName}
               </span>
+              {dataSource === "live" && (
+                <span
+                  className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 uppercase tracking-wide"
+                  title="Dati scaricati live da Twelve Data"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Live
+                </span>
+              )}
+              {dataSource === "cache" && (
+                <span
+                  className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 uppercase tracking-wide"
+                  title="Dati prelevati dalla cache Redis"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  Cache
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-400">Twelve Data Feed (Ultime 100 candele)</p>
           </div>
@@ -266,7 +367,7 @@ export function CandleChart({
             <div className="flex items-center gap-1.5 font-mono text-[11px] text-slate-400">
               <Clock className="w-3.5 h-3.5 text-slate-500" />
               <span>
-                Aggiornato: {lastUpdated.toLocaleTimeString("it-IT", { hour12: false })}
+                Aggiornato: {lastUpdated.toLocaleTimeString("it-IT", { timeZone: "Europe/Rome", hour12: false })}
               </span>
             </div>
           )}

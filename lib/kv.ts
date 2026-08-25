@@ -57,7 +57,12 @@ const inMemorySignalCountMap = new Map<string, number>();
 let inMemoryLastCheckLog: MarketCheckLog | null = null;
 let inMemoryCheckHistory: MarketCheckLog[] = [];
 let inMemoryManualHistory: StoredManualAnalysis[] = [];
-const inMemoryCandlesCache = new Map<string, { data: CandleData[]; expiresAt: number }>();
+export interface CachedCandlesData {
+  candles: CandleData[];
+  fetchedAt: number;
+}
+
+const inMemoryCandlesCache = new Map<string, { data: CachedCandlesData; expiresAt: number }>();
 
 /**
  * Inizializza il client Redis rilevando automaticamente sia le variabili
@@ -452,12 +457,12 @@ export function getTimeframeTtlSeconds(timeframe: string): number {
 
 /**
  * Legge le candele dalla cache Redis (o fallback in-memory se Redis non è configurato).
- * Restituisce null se la chiave non esiste o se il TTL è scaduto.
+ * Restituisce CachedCandlesData oppure null se la chiave non esiste o se il TTL è scaduto.
  */
 export async function getCachedCandles(
   symbol: string,
   timeframe: string
-): Promise<CandleData[] | null> {
+): Promise<CachedCandlesData | null> {
   const key = getCandlesCacheKey(symbol, timeframe);
   const redis = getRedisClient();
 
@@ -471,17 +476,31 @@ export async function getCachedCandles(
   }
 
   try {
-    const data = await redis.get<CandleData[] | string>(key);
-    if (!data) return null;
+    const raw = await redis.get<CachedCandlesData | CandleData[] | string>(key);
+    if (!raw) return null;
 
-    if (typeof data === "string") {
+    let parsed: unknown = raw;
+    if (typeof raw === "string") {
       try {
-        return JSON.parse(data) as CandleData[];
+        parsed = JSON.parse(raw);
       } catch {
         return null;
       }
     }
-    return data as CandleData[];
+
+    if (Array.isArray(parsed)) {
+      return {
+        candles: parsed as CandleData[],
+        fetchedAt: Date.now(),
+      };
+    } else if (parsed && typeof parsed === "object" && "candles" in parsed && Array.isArray((parsed as CachedCandlesData).candles)) {
+      const obj = parsed as CachedCandlesData;
+      return {
+        candles: obj.candles,
+        fetchedAt: typeof obj.fetchedAt === "number" ? obj.fetchedAt : Date.now(),
+      };
+    }
+    return null;
   } catch (error) {
     console.warn(`[KV Storage] Errore lettura cache candele [${key}]:`, error);
     const cached = inMemoryCandlesCache.get(key);
@@ -493,19 +512,24 @@ export async function getCachedCandles(
 }
 
 /**
- * Salva le candele nella cache Redis con il relativo TTL in secondi.
+ * Salva le candele nella cache Redis con il relativo TTL in secondi e il timestamp di fetch.
  */
 export async function setCachedCandles(
   symbol: string,
   timeframe: string,
   candles: CandleData[],
-  ttlSeconds?: number
+  ttlSeconds?: number,
+  fetchedAt: number = Date.now()
 ): Promise<void> {
   const ttl = ttlSeconds ?? getTimeframeTtlSeconds(timeframe);
   const key = getCandlesCacheKey(symbol, timeframe);
+  const payload: CachedCandlesData = {
+    candles,
+    fetchedAt,
+  };
 
   inMemoryCandlesCache.set(key, {
-    data: candles,
+    data: payload,
     expiresAt: Date.now() + ttl * 1000,
   });
 
@@ -513,7 +537,7 @@ export async function setCachedCandles(
   if (!redis) return;
 
   try {
-    await redis.set(key, candles, { ex: ttl });
+    await redis.set(key, payload, { ex: ttl });
   } catch (error) {
     console.warn(`[KV Storage] Errore scrittura cache candele [${key}]:`, error);
   }

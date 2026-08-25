@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchCandlesWithCache } from "@/lib/marketData";
+import { fetchCandlesWithCacheDetails } from "@/lib/marketData";
 
 export const dynamic = "force-dynamic";
 
@@ -12,14 +12,19 @@ export async function GET(req: NextRequest) {
       searchParams.get("forceRefresh") === "true" ||
       searchParams.get("force") === "true";
 
-    const data = await fetchCandlesWithCache({
+    const result = await fetchCandlesWithCacheDetails({
       symbol,
       timeframe,
       outputsize: 100,
       forceRefresh,
     });
 
-    return NextResponse.json({ success: true, data });
+    return NextResponse.json({
+      success: true,
+      data: result.candles,
+      source: result.source,
+      fetchedAt: result.fetchedAt,
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Errore interno durante il recupero dei dati";
