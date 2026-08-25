@@ -156,6 +156,20 @@ export function StatusDashboard({
       .slice(0, displayLimit);
   }, [history, onlyMarketOpen, onlySignals, displayLimit]);
 
+  // Helper per calcolare sempre il numero di condizioni tecniche soddisfatte (su 3 richieste)
+  const getCondizioniCount = (item: MarketCheckLog): number => {
+    if (typeof item.condizioniSoddisfatte === "number") {
+      return item.condizioniSoddisfatte;
+    }
+    if (Array.isArray(item.motivi) && item.motivi.length > 0) {
+      return item.motivi.length;
+    }
+    if (item.signalDetected) {
+      return 2;
+    }
+    return 0;
+  };
+
   return (
     <div className="space-y-8">
       {/* Header Bar */}
@@ -327,19 +341,36 @@ export function StatusDashboard({
 
           {/* Outcome Detail Panel */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 sm:p-6 space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <h2 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
                 <Info className="w-4 h-4 text-blue-400" />
                 Dettaglio Ultimo Esito
               </h2>
-              {log.currentPrice && (
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Badge Condizioni Sempre Visibile */}
                 <div className="text-xs text-slate-400 font-mono bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700">
-                  Prezzo XAU/USD:{" "}
-                  <span className="text-emerald-400 font-semibold">
-                    ${log.currentPrice.toFixed(2)}
+                  Condizioni:{" "}
+                  <span
+                    className={`font-bold ${
+                      getCondizioniCount(log) >= 2
+                        ? "text-purple-400"
+                        : getCondizioniCount(log) === 1
+                        ? "text-blue-400"
+                        : "text-slate-400"
+                    }`}
+                  >
+                    {getCondizioniCount(log)}/3
                   </span>
                 </div>
-              )}
+                {log.currentPrice && (
+                  <div className="text-xs text-slate-400 font-mono bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700">
+                    Prezzo XAU/USD:{" "}
+                    <span className="text-emerald-400 font-semibold">
+                      ${log.currentPrice.toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Main Outcome Message Box */}
@@ -359,64 +390,182 @@ export function StatusDashboard({
               ) : (
                 <ShieldCheck className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
               )}
-              <div className="space-y-1">
+              <div className="space-y-2 flex-1">
                 <div className="font-semibold text-white">{log.message}</div>
-                {log.motivi && log.motivi.length > 0 && (
-                  <div className="pt-2 text-xs space-y-1 text-slate-300">
-                    <div className="font-medium text-slate-400">
-                      Condizioni Rilevate ({log.condizioniSoddisfatte ?? 0}/3):
-                    </div>
-                    <ul className="list-disc list-inside space-y-0.5 pl-1">
+
+                {/* Sezione Condizioni Sempre Visibile per ogni check */}
+                <div className="pt-2 text-xs space-y-1 text-slate-300 border-t border-slate-700/40">
+                  <div className="flex items-center justify-between font-medium">
+                    <span className="text-slate-400">
+                      Condizioni Tecniche Rilevate ({getCondizioniCount(log)}/3 richieste):
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded font-mono font-bold text-[11px] ${
+                        getCondizioniCount(log) >= 2
+                          ? "bg-purple-950/70 text-purple-300 border border-purple-700/60"
+                          : getCondizioniCount(log) === 1
+                          ? "bg-blue-950/60 text-blue-300 border border-blue-800/50"
+                          : "bg-slate-800 text-slate-400 border border-slate-700"
+                      }`}
+                    >
+                      {getCondizioniCount(log)} / 3
+                    </span>
+                  </div>
+                  {log.motivi && log.motivi.length > 0 ? (
+                    <ul className="list-disc list-inside space-y-0.5 pl-1 pt-1">
                       {log.motivi.map((m, idx) => (
                         <li key={idx}>{m}</li>
                       ))}
                     </ul>
-                  </div>
-                )}
+                  ) : (
+                    <p className="text-[11px] text-slate-400 italic pt-0.5">
+                      {log.marketOpen
+                        ? "Nessuna condizione tecnica di breakout/momentum soddisfatta (soglia minima: ≥ 2/3)."
+                        : "Controllo non eseguito (mercato chiuso)."}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
+
             {/* Technical Indicators Row for Last Check */}
-            {(log.rsi !== undefined || log.atr !== undefined) && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
-                <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
-                  <div className="text-[11px] text-slate-400">RSI (14)</div>
-                  <div className="text-sm font-bold font-mono text-white mt-0.5">
-                    {typeof log.rsi === "number" ? log.rsi.toFixed(2) : "-"}
+            {(log.rsi !== undefined || log.atr !== undefined) && (() => {
+              const isLogAtrExpanded =
+                typeof log.atr === "number" &&
+                typeof log.atrAvg === "number" &&
+                log.atrAvg > 0 &&
+                log.atr >= log.atrAvg * 1.2;
+              const logAtrPct =
+                typeof log.atr === "number" &&
+                typeof log.atrAvg === "number" &&
+                log.atrAvg > 0
+                  ? Number(((log.atr / log.atrAvg - 1) * 100).toFixed(0))
+                  : null;
+
+              const hasLogRsi = typeof log.rsi === "number" && !isNaN(log.rsi);
+              const isLogRsiTriggered =
+                hasLogRsi && (log.rsi! >= 60 || log.rsi! <= 40);
+
+              return (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                  {/* 1. RSI (14) */}
+                  <div
+                    className={`rounded-lg p-3 border transition-colors ${
+                      isLogRsiTriggered
+                        ? log.rsi! >= 60
+                          ? "bg-emerald-950/20 border-emerald-500/40"
+                          : "bg-rose-950/20 border-rose-500/40"
+                        : "bg-slate-950/60 border-slate-800/80"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>RSI (14)</span>
+                      {isLogRsiTriggered ? (
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.2 rounded border font-sans ${
+                            log.rsi! >= 60
+                              ? "bg-emerald-950 text-emerald-300 border-emerald-600/50"
+                              : "bg-rose-950 text-rose-300 border-rose-600/50"
+                          }`}
+                        >
+                          {log.rsi! >= 60 ? "Ipercomprato" : "Ipervenduto"}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-500">
+                          Neutrale
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      className={`text-sm font-bold font-mono mt-0.5 ${
+                        hasLogRsi
+                          ? log.rsi! >= 60
+                            ? "text-emerald-300"
+                            : log.rsi! <= 40
+                            ? "text-rose-300"
+                            : "text-white"
+                          : "text-slate-500"
+                      }`}
+                    >
+                      {hasLogRsi ? log.rsi!.toFixed(2) : "-"}
+                    </div>
+                  </div>
+
+                  {/* 2. ATR Corrente con Evidenza Espansione */}
+                  <div
+                    className={`rounded-lg p-3 border transition-colors ${
+                      isLogAtrExpanded
+                        ? "bg-purple-950/20 border-purple-500/40"
+                        : "bg-slate-950/60 border-slate-800/80"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>ATR Corrente</span>
+                      {isLogAtrExpanded ? (
+                        <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-950 text-purple-300 border border-purple-600/50 flex items-center gap-1 font-sans">
+                          <Check className="w-3 h-3 text-purple-400" />
+                          +{logAtrPct}% Espanso
+                        </span>
+                      ) : logAtrPct !== null ? (
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {logAtrPct >= 0 ? `+${logAtrPct}%` : `${logAtrPct}%`} (&lt;+20%)
+                        </span>
+                      ) : null}
+                    </div>
+                    <div
+                      className={`text-sm font-bold font-mono mt-0.5 ${
+                        isLogAtrExpanded ? "text-purple-300" : "text-white"
+                      }`}
+                    >
+                      {typeof log.atr === "number" ? `$${log.atr.toFixed(2)}` : "-"}
+                    </div>
+                  </div>
+
+                  {/* 3. ATR Media (20p) con Target */}
+                  <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>ATR Media (20p)</span>
+                      {typeof log.atrAvg === "number" && (
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          Target: ${(log.atrAvg * 1.2).toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-sm font-bold font-mono text-white mt-0.5">
+                      {typeof log.atrAvg === "number"
+                        ? `$${log.atrAvg.toFixed(2)}`
+                        : "-"}
+                    </div>
+                  </div>
+
+                  {/* 4. Rottura Livello */}
+                  <div
+                    className={`rounded-lg p-3 border transition-colors ${
+                      log.breakoutDetected
+                        ? "bg-purple-950/20 border-purple-500/40"
+                        : "bg-slate-950/60 border-slate-800/80"
+                    }`}
+                  >
+                    <div className="text-[11px] text-slate-400">Rottura Livello</div>
+                    <div className="text-sm font-bold text-white mt-0.5 flex items-center gap-1.5">
+                      {log.breakoutDetected ? (
+                        <span className="text-purple-300 inline-flex items-center gap-1">
+                          <Check className="w-3.5 h-3.5 text-purple-400" />
+                          {log.breakoutType ? log.breakoutType.toUpperCase() : "Sì"}
+                        </span>
+                      ) : (
+                        <span className="text-slate-500 inline-flex items-center gap-1">
+                          <X className="w-3.5 h-3.5" />
+                          No
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
-                  <div className="text-[11px] text-slate-400">ATR Corrente</div>
-                  <div className="text-sm font-bold font-mono text-white mt-0.5">
-                    {typeof log.atr === "number" ? `$${log.atr.toFixed(2)}` : "-"}
-                  </div>
-                </div>
-                <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
-                  <div className="text-[11px] text-slate-400">ATR Media (20p)</div>
-                  <div className="text-sm font-bold font-mono text-white mt-0.5">
-                    {typeof log.atrAvg === "number"
-                      ? `$${log.atrAvg.toFixed(2)}`
-                      : "-"}
-                  </div>
-                </div>
-                <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
-                  <div className="text-[11px] text-slate-400">Rottura Livello</div>
-                  <div className="text-sm font-bold text-white mt-0.5 flex items-center gap-1.5">
-                    {log.breakoutDetected ? (
-                      <span className="text-purple-400 inline-flex items-center gap-1">
-                        <Check className="w-3.5 h-3.5" />
-                        {log.breakoutType ? log.breakoutType.toUpperCase() : "Sì"}
-                      </span>
-                    ) : (
-                      <span className="text-slate-500 inline-flex items-center gap-1">
-                        <X className="w-3.5 h-3.5" />
-                        No
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
+              );
+            })()}
+
 
             {/* Technical Metadata */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs text-slate-400 border-t border-slate-800/60">
@@ -574,6 +723,9 @@ export function StatusDashboard({
                   <th scope="col" className="px-3 py-3">
                     Segnale
                   </th>
+                  <th scope="col" className="px-3 py-3 text-center">
+                    Condizioni
+                  </th>
                   <th scope="col" className="px-3 py-3 text-right">
                     RSI (14)
                   </th>
@@ -597,6 +749,21 @@ export function StatusDashboard({
                     typeof item.rsi === "number" && !isNaN(item.rsi);
                   const isRsiOverbought = hasRsi && item.rsi! >= 60;
                   const isRsiOversold = hasRsi && item.rsi! <= 40;
+                  const isRsiTriggered = isRsiOverbought || isRsiOversold;
+
+                  const isAtrExpanded =
+                    typeof item.atr === "number" &&
+                    typeof item.atrAvg === "number" &&
+                    item.atrAvg > 0 &&
+                    item.atr >= item.atrAvg * 1.2;
+                  const atrPct =
+                    typeof item.atr === "number" &&
+                    typeof item.atrAvg === "number" &&
+                    item.atrAvg > 0
+                      ? Number(((item.atr / item.atrAvg - 1) * 100).toFixed(0))
+                      : null;
+
+                  const condCount = getCondizioniCount(item);
 
                   return (
                     <tr
@@ -657,35 +824,87 @@ export function StatusDashboard({
                         )}
                       </td>
 
-                      {/* 4. RSI (14) */}
+                      {/* 4. Condizioni Tecniche Rilevate (su 3) */}
+                      <td className="px-3 py-2.5 whitespace-nowrap text-center font-mono">
+                        <span
+                          className={`inline-flex items-center justify-center px-2 py-0.5 rounded text-[11px] font-bold ${
+                            condCount >= 2
+                              ? "bg-purple-950/70 text-purple-300 border border-purple-700/60"
+                              : condCount === 1
+                              ? "bg-blue-950/60 text-blue-300 border border-blue-800/50"
+                              : "text-slate-400 bg-slate-800/60 border border-slate-700/40"
+                          }`}
+                        >
+                          {condCount} / 3
+                        </span>
+                      </td>
+
+                      {/* 5. RSI (14) con evidenza chiara se fuori 40-60 */}
                       <td className="px-3 py-2.5 whitespace-nowrap text-right font-mono">
                         {hasRsi ? (
-                          <span
-                            className={`font-semibold ${
-                              isRsiOverbought
-                                ? "text-emerald-400"
-                                : isRsiOversold
-                                ? "text-rose-400"
-                                : "text-slate-300"
-                            }`}
-                          >
-                            {item.rsi!.toFixed(1)}
-                          </span>
+                          <div className="space-y-0.5">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {isRsiTriggered && (
+                                <span
+                                  className={`text-[10px] font-bold px-1.5 py-0.2 rounded font-sans border ${
+                                    isRsiOverbought
+                                      ? "bg-emerald-950 text-emerald-300 border-emerald-600/50"
+                                      : "bg-rose-950 text-rose-300 border-rose-600/50"
+                                  }`}
+                                >
+                                  {isRsiOverbought ? "≥60" : "≤40"}
+                                </span>
+                              )}
+                              <span
+                                className={`font-semibold ${
+                                  isRsiOverbought
+                                    ? "text-emerald-400"
+                                    : isRsiOversold
+                                    ? "text-rose-400"
+                                    : "text-slate-300"
+                                }`}
+                              >
+                                {item.rsi!.toFixed(1)}
+                              </span>
+                            </div>
+                          </div>
                         ) : (
                           <span className="text-slate-600">-</span>
                         )}
                       </td>
 
-                      {/* 5. ATR Corrente vs Media */}
+                      {/* 6. ATR Corrente vs Media con evidenza chiara se Espanso (>= +20%) */}
                       <td className="px-3 py-2.5 whitespace-nowrap text-right font-mono">
                         {typeof item.atr === "number" ? (
                           <div className="space-y-0.5">
-                            <div className="font-semibold text-slate-200">
-                              ${item.atr.toFixed(2)}
+                            <div className="flex items-center justify-end gap-1.5">
+                              {isAtrExpanded && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-950 text-purple-300 border border-purple-600/50 font-sans">
+                                  Espanso
+                                </span>
+                              )}
+                              <span
+                                className={`font-semibold ${
+                                  isAtrExpanded ? "text-purple-300" : "text-slate-200"
+                                }`}
+                              >
+                                ${item.atr.toFixed(2)}
+                              </span>
                             </div>
                             {typeof item.atrAvg === "number" && (
-                              <div className="text-[10px] text-slate-500">
-                                avg ${item.atrAvg.toFixed(2)}
+                              <div
+                                className={`text-[10px] flex items-center justify-end gap-1 ${
+                                  isAtrExpanded
+                                    ? "text-purple-400 font-semibold"
+                                    : "text-slate-500"
+                                }`}
+                              >
+                                <span>avg ${item.atrAvg.toFixed(2)}</span>
+                                {atrPct !== null && (
+                                  <span>
+                                    ({atrPct >= 0 ? `+${atrPct}%` : `${atrPct}%`})
+                                  </span>
+                                )}
                               </div>
                             )}
                           </div>
@@ -693,6 +912,7 @@ export function StatusDashboard({
                           <span className="text-slate-600">-</span>
                         )}
                       </td>
+
 
                       {/* 6. Rottura Livello (Breakout) */}
                       <td className="px-3 py-2.5 whitespace-nowrap text-center">

@@ -473,7 +473,7 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
       timestamp: Date.now(),
       marketOpen: true,
       signalDetected: true,
-      consecutiveSignalCount: isAiConfirmed ? 0 : consecutiveSignalCount,
+      consecutiveSignalCount,
       alertSent: telegramSent,
       message: outcomeMessage,
       currentPrice: indicators.currentPrice,
@@ -494,7 +494,7 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
       alert: isAiConfirmed,
       telegramSent,
       telegramError,
-      consecutiveSignalCount: isAiConfirmed ? 0 : consecutiveSignalCount,
+      consecutiveSignalCount,
       requiredConsecutiveSignals: REQUIRED_CONSECUTIVE_SIGNALS,
       minutesSinceLastAlert: isAiConfirmed ? 0 : minutesSinceLastAlert,
       cooldownMinutes: ALERT_COOLDOWN_MINUTES,
@@ -507,6 +507,7 @@ async function handleCheckMarket(req: NextRequest): Promise<NextResponse> {
       filterResult,
       aiAnalysis,
     };
+
 
     return NextResponse.json(
       {
